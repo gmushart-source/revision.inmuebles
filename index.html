@@ -12,7 +12,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import {
       getAuth, onAuthStateChanged, signInWithEmailAndPassword,
-      createUserWithEmailAndPassword, signOut
+      sendPasswordResetEmail, signOut
     } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
     import {
       getFirestore, collection, doc, getDocs, setDoc, deleteDoc, query, where
@@ -38,6 +38,15 @@
     const userEmail   = document.getElementById("userEmail");
 
     function showLogin() {
+      // Limpiar campos al volver al login
+      document.getElementById("loginEmail").value    = "";
+      document.getElementById("loginPassword").value = "";
+      loginError.textContent = "";
+      // Resetear ojo de contraseña
+      const pwInput = document.getElementById("loginPassword");
+      const eyeBtn  = document.getElementById("togglePassword");
+      pwInput.type = "password";
+      if (eyeBtn) eyeBtn.textContent = "👁️";
       screenLogin.style.display = "flex";
       screenApp.style.display   = "none";
     }
@@ -67,38 +76,39 @@
       }
     });
 
-    // ── register form (crear cuenta) ──
-    document.getElementById("registerForm").addEventListener("submit", async e => {
-      e.preventDefault();
-      loginError.textContent = "";
-      const email    = document.getElementById("loginEmail").value.trim();
-      const password = document.getElementById("loginPassword").value;
-      try {
-        await createUserWithEmailAndPassword(auth, email, password);
-      } catch (err) {
-        loginError.textContent = traducirError(err.code);
-      }
-    });
-
     // ── logout ──
     document.getElementById("logoutBtn").addEventListener("click", () => signOut(auth));
 
-    // ── toggle entre login / crear cuenta ──
-    document.getElementById("showRegister").addEventListener("click", e => {
-      e.preventDefault();
-      document.getElementById("loginSubmit").style.display   = "none";
-      document.getElementById("registerSubmit").style.display = "block";
-      document.getElementById("showRegister").style.display  = "none";
-      document.getElementById("showLogin").style.display     = "inline";
-      document.getElementById("loginTitle").textContent = "Crear cuenta";
+    // ── mostrar/ocultar contraseña ──
+    document.getElementById("togglePassword").addEventListener("click", () => {
+      const input = document.getElementById("loginPassword");
+      const btn   = document.getElementById("togglePassword");
+      if (input.type === "password") {
+        input.type   = "text";
+        btn.textContent = "🙈";
+      } else {
+        input.type   = "password";
+        btn.textContent = "👁️";
+      }
     });
-    document.getElementById("showLogin").addEventListener("click", e => {
+
+    // ── recuperar contraseña ──
+    document.getElementById("forgotPassword").addEventListener("click", async e => {
       e.preventDefault();
-      document.getElementById("loginSubmit").style.display   = "block";
-      document.getElementById("registerSubmit").style.display = "none";
-      document.getElementById("showRegister").style.display  = "inline";
-      document.getElementById("showLogin").style.display     = "none";
-      document.getElementById("loginTitle").textContent = "Iniciar sesión";
+      const email = document.getElementById("loginEmail").value.trim();
+      if (!email) {
+        loginError.style.color = "var(--amber)";
+        loginError.textContent = "Escribe tu correo arriba para recuperar la contraseña.";
+        return;
+      }
+      try {
+        await sendPasswordResetEmail(auth, email);
+        loginError.style.color = "var(--green)";
+        loginError.textContent = "✓ Se envió un correo de recuperación a " + email;
+      } catch (err) {
+        loginError.style.color = "var(--terra)";
+        loginError.textContent = traducirError(err.code);
+      }
     });
 
     function traducirError(code) {
@@ -106,8 +116,6 @@
         "auth/invalid-email":           "Correo electrónico inválido.",
         "auth/user-not-found":          "No existe una cuenta con ese correo.",
         "auth/wrong-password":          "Contraseña incorrecta.",
-        "auth/email-already-in-use":    "Ese correo ya tiene una cuenta.",
-        "auth/weak-password":           "La contraseña debe tener al menos 6 caracteres.",
         "auth/invalid-credential":      "Correo o contraseña incorrectos.",
         "auth/too-many-requests":       "Demasiados intentos. Intenta más tarde.",
       };
@@ -753,7 +761,10 @@
     </div>
     <div class="login-field">
       <label>Contraseña</label>
-      <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password" required />
+      <div style="position:relative">
+        <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password" required style="width:100%;padding-right:42px" />
+        <button type="button" id="togglePassword" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:16px;line-height:1;padding:0;color:var(--ink-soft)">👁️</button>
+      </div>
     </div>
 
     <div class="login-error" id="loginError"></div>
@@ -761,13 +772,9 @@
     <form id="loginForm" style="display:contents">
       <button type="submit" id="loginSubmit" class="btn btn-primary" style="width:100%">Entrar</button>
     </form>
-    <form id="registerForm" style="display:contents">
-      <button type="submit" id="registerSubmit" class="btn btn-primary" style="width:100%;display:none">Crear cuenta</button>
-    </form>
 
     <div class="login-links">
-      <a id="showRegister">¿No tienes cuenta? Crear una</a>
-      <a id="showLogin" style="display:none">¿Ya tienes cuenta? Iniciar sesión</a>
+      <a id="forgotPassword" href="#">¿Olvidaste tu contraseña?</a>
     </div>
   </div>
 </div>
