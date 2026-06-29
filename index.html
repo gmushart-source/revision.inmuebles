@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Registro de Inmuebles</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+
+  <!-- ✅ Firebase SDK (versión modular v10) -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import {
+      getAuth, onAuthStateChanged, signInWithEmailAndPassword,
+      createUserWithEmailAndPassword, signOut
+    } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+    import {
+      getFirestore, collection, doc, getDocs, setDoc, deleteDoc, query, where
+    } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+    // ====================================================
+    // 🔧 REEMPLAZA ESTOS VALORES CON LOS DE TU PROYECTO
+    // Ve a: Firebase Console → Tu proyecto → Configuración → Apps web
+    // ====================================================
+    const firebaseConfig = {
+      apiKey:            "TU_API_KEY",
+      authDomain:        "TU_PROJECT_ID.firebaseapp.com",
+      projectId:         "TU_PROJECT_ID",
+      storageBucket:     "TU_PROJECT_ID.appspot.com",
+      messagingSenderId: "TU_MESSAGING_SENDER_ID",
+      appId:             "TU_APP_ID"
+    };
+
+    const app  = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db   = getFirestore(app);
+
+    // ── pantallas ──
+    const screenLogin = document.getElementById("screenLogin");
+    const screenApp   = document.getElementById("screenApp");
+    const loginError  = document.getElementById("loginError");
+    const userEmail   = document.getElementById("userEmail");
+
+    function showLogin() {
+      screenLogin.style.display = "flex";
+      screenApp.style.display   = "none";
+    }
+    function showApp(user) {
+      screenLogin.style.display = "none";
+      screenApp.style.display   = "block";
+      userEmail.textContent = user.email;
+      initApp(db, user);
+    }
+
+    // ── auth state ──
+    onAuthStateChanged(auth, user => {
+      if (user) showApp(user);
+      else       showLogin();
+    });
+
+    // ── login form ──
+    document.getElementById("loginForm").addEventListener("submit", async e => {
+      e.preventDefault();
+      loginError.textContent = "";
+      const email    = document.getElementById("loginEmail").value.trim();
+      const password = document.getElementById("loginPassword").value;
+      try {
+        await signInWithEmailAndPassword(auth, email, password);
+      } catch (err) {
+        loginError.textContent = traducirError(err.code);
+      }
+    });
+
+    // ── register form (crear cuenta) ──
+    document.getElementById("registerForm").addEventListener("submit", async e => {
+      e.preventDefault();
+      loginError.textContent = "";
+      const email    = document.getElementById("loginEmail").value.trim();
+      const password = document.getElementById("loginPassword").value;
+      try {
+        await createUserWithEmailAndPassword(auth, email, password);
+      } catch (err) {
+        loginError.textContent = traducirError(err.code);
+      }
+    });
+
+    // ── logout ──
+    document.getElementById("logoutBtn").addEventListener("click", () => signOut(auth));
+
+    // ── toggle entre login / crear cuenta ──
+    document.getElementById("showRegister").addEventListener("click", e => {
+      e.preventDefault();
+      document.getElementById("loginSubmit").style.display   = "none";
+      document.getElementById("registerSubmit").style.display = "block";
+      document.getElementById("showRegister").style.display  = "none";
+      document.getElementById("showLogin").style.display     = "inline";
+      document.getElementById("loginTitle").textContent = "Crear cuenta";
+    });
+    document.getElementById("showLogin").addEventListener("click", e => {
+      e.preventDefault();
+      document.getElementById("loginSubmit").style.display   = "block";
+      document.getElementById("registerSubmit").style.display = "none";
+      document.getElementById("showRegister").style.display  = "inline";
+      document.getElementById("showLogin").style.display     = "none";
+      document.getElementById("loginTitle").textContent = "Iniciar sesión";
+    });
+
+    function traducirError(code) {
+      const map = {
+        "auth/invalid-email":           "Correo electrónico inválido.",
+        "auth/user-not-found":          "No existe una cuenta con ese correo.",
+        "auth/wrong-password":          "Contraseña incorrecta.",
+        "auth/email-already-in-use":    "Ese correo ya tiene una cuenta.",
+        "auth/weak-password":           "La contraseña debe tener al menos 6 caracteres.",
+        "auth/invalid-credential":      "Correo o contraseña incorrectos.",
+        "auth/too-many-requests":       "Demasiados intentos. Intenta más tarde.",
+      };
+      return map[code] || "Error: " + code;
+    }
+
+    // ====================================================
+    //   LÓGICA PRINCIPAL DE LA APP
+    // ====================================================
+    function initApp(db, user) {
+      const COLL = "registros";
+      let registros = [];
+      let editingId = null;
+      let currentPhotos = [];
+      let mapDebounce = null;
+      let lbPhotos = [], lbIndex = 0;
+
+      const $ = sel => document.querySelector(sel);
+      const tableWrap = $("#tableWrap");
+      const statsRow  = $("#statsRow");
+      const overlay   = $("#overlay");
+      const form      = $("#propForm");
+      const toastEl   = $("#toast");
+
+      function showToast(msg) {
+        toastEl.textContent = msg;
+        toastEl.classList.add("show");
+        setTimeout(() => toastEl.classList.remove("show"), 2200);
+      }
+
+      function uid() {
+        return "r_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
+      }
+
+      // ── Firestore: cargar ──
+      async function load() {
+        try {
+          const q = query(collection(db, COLL), where("uid", "==", user.uid));
+          const snap = await getDocs(q);
+          registros = snap.docs.map(d => d.data());
+        } catch (e) {
+          console.error(e);
+          registros = [];
+        }
+        render();
+      }
+
+      // ── Firestore: guardar un registro ──
+      async function saveRecord(r) {
+        try {
+          await setDoc(doc(db, COLL, r.id), { ...r, uid: user.uid });
+        } catch (e) {
+          showToast("Error al guardar. Verifica tu conexión.");
+        }
+      }
+
+      // ── Firestore: eliminar ──
+      async function deleteFirestore(id) {
+        try {
+          await deleteDoc(doc(db, COLL, id));
+        } catch (e) {
+          showToast("Error al eliminar.");
+        }
+      }
+
+      // ── estadoGeneral ──
+      function estadoGeneral(r) {
+        if (!r.necesitaInspeccion) return { label: "No requiere inspección", tone: "neutral",  key: "no_requiere" };
+        if (r.contactoPropietario === false) return { label: "Propietario no contactado", tone: "warning", key: "no_contactado" };
+        if (r.contactoPropietario === true) {
+          if (r.inspeccionRealizada) return { label: "Inspección realizada", tone: "success", key: "realizada" };
+          return { label: "Inspección programada", tone: "info", key: "programada" };
+        }
+        return { label: "Pendiente de contacto", tone: "warning", key: "pendiente_contacto" };
+      }
+
+      function infraTone(e) {
+        if (!e) return "neutral";
+        if (e === "Sin daños visibles") return "success";
+        if (e === "Daños leves")        return "info";
+        if (e === "Daños moderados")    return "warning";
+        return "danger";
+      }
+
+      function reparacionPill(r) {
+        if (r.necesitaReparaciones === true)  return { label: "Requiere reparación", tone: "danger" };
+        if (r.necesitaReparaciones === false) return { label: "Sin reparaciones",    tone: "success" };
+        return { label: "Por determinar", tone: "neutral" };
+      }
+
+      function fmtFecha(iso) {
+        if (!iso) return "—";
+        const d = new Date(iso);
+        return d.toLocaleDateString("es-VE");
+      }
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+      }
+
+      // ── renderStats ──
+      function renderStats() {
+        const total            = registros.length;
+        const necesitan        = registros.filter(r =>  r.necesitaInspeccion).length;
+        const pendienteContacto= registros.filter(r =>  r.necesitaInspeccion && r.contactoPropietario !== true && r.contactoPropietario !== false).length;
+        const noContactado     = registros.filter(r =>  r.necesitaInspeccion && r.contactoPropietario === false).length;
+        const realizadas       = registros.filter(r =>  r.necesitaInspeccion && r.inspeccionRealizada).length;
+        const requiereReparacion = registros.filter(r => r.necesitaReparaciones === true).length;
+
+        const cards = [
+          { n: total,                            l: "Inmuebles",              cls: "" },
+          { n: necesitan,                        l: "Necesitan inspección",   cls: "" },
+          { n: pendienteContacto + noContactado, l: "Sin contacto efectivo",  cls: "warn" },
+          { n: realizadas,                       l: "Inspecciones realizadas", cls: "ok" },
+          { n: requiereReparacion,               l: "Requieren reparación",   cls: "danger" },
+        ];
+        statsRow.innerHTML = cards.map(c => `
+          <div class="stat-card ${c.cls}">
+            <div class="stat-num">${c.n}</div>
+            <div class="stat-label">${c.l}</div>
+          </div>`).join("");
+      }
+
+      // ── applyFilters ──
+      function applyFilters(list) {
+        const q        = $("#searchInput").value.trim().toLowerCase();
+        const tipo     = $("#filterTipo").value;
+        const operacion= $("#filterOperacion").value;
+        const estado   = $("#filterEstado").value;
+        return list.filter(r => {
+          if (q        && !r.codigo.toLowerCase().includes(q)) return false;
+          if (tipo     && r.tipo      !== tipo)      return false;
+          if (operacion && r.operacion !== operacion) return false;
+          if (estado   && estadoGeneral(r).key !== estado) return false;
+          return true;
+        });
+      }
+
+      // ── render tabla ──
+      function render() {
+        renderStats();
+        const list = applyFilters(registros).sort((a, b) =>
+          (b.fechaActualizacion || "").localeCompare(a.fechaActualizacion || "")
+        );
+
+        if (registros.length === 0) {
+          tableWrap.innerHTML = `<div class="empty-state"><div class="big">Todavía no hay inmuebles registrados</div><div>Registra el primero para empezar.</div></div>`;
+          return;
+        }
+        if (list.length === 0) {
+          tableWrap.innerHTML = `<div class="empty-state"><div class="big">Sin resultados</div><div>Ningún inmueble coincide con los filtros.</div></div>`;
+          return;
+        }
+
+        const rows = list.map(r => {
+          const eg   = estadoGeneral(r);
+          const rep  = reparacionPill(r);
+          const fotos = r.fotos || [];
+          const fotosCells = fotos.length > 0
+            ? `<div class="photo-strip">${fotos.slice(0, 3).map((d, i) => `<img src="${d}" alt="foto ${i+1}" data-recid="${r.id}" data-fi="${i}" />`).join("")}${fotos.length > 3 ? `<span class="photo-count">+${fotos.length - 3}</span>` : ""}</div>`
+            : `<span class="muted">—</span>`;
+          return `<tr>
+            <td data-label="Código"><span class="codigo-cell">${escapeHtml(r.codigo)}</span></td>
+            <td data-label="Tipo">${r.tipo}</td>
+            <td data-label="Operación">${r.operacion}</td>
+            <td data-label="Dirección"><span class="muted" style="font-size:12px">${r.direccion ? escapeHtml(r.direccion) : "—"}</span></td>
+            <td data-label="Estado"><span class="pill pill-${eg.tone}">${eg.label}</span></td>
+            <td data-label="Infraestructura">${r.estadoInfraestructura ? `<span class="pill pill-${infraTone(r.estadoInfraestructura)}">${r.estadoInfraestructura}</span>` : '<span class="muted">—</span>'}</td>
+            <td data-label="Reparación"><span class="pill pill-${rep.tone}">${rep.label}</span></td>
+            <td data-label="Fotos">${fotosCells}</td>
+            <td data-label="Actualizado"><span class="muted">${fmtFecha(r.fechaActualizacion)}</span></td>
+            <td data-label="Acciones">
+              <button class="btn-text" data-edit="${r.id}">Editar</button>
+              <button class="btn-text danger" data-del="${r.id}">Eliminar</button>
+            </td>
+          </tr>`;
+        }).join("");
+
+        tableWrap.innerHTML = `<table>
+          <thead><tr>
+            <th>Código</th><th>Tipo</th><th>Operación</th><th>Dirección</th><th>Estado</th>
+            <th>Infraestructura</th><th>Reparación</th><th>Fotos</th><th>Actualizado</th><th>Acciones</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+
+        tableWrap.querySelectorAll("[data-edit]").forEach(btn =>
+          btn.addEventListener("click", () => openEdit(btn.getAttribute("data-edit")))
+        );
+        tableWrap.querySelectorAll("[data-del]").forEach(btn =>
+          btn.addEventListener("click", () => deleteRecord(btn.getAttribute("data-del")))
+        );
+        tableWrap.querySelectorAll("[data-recid]").forEach(img => {
+          img.addEventListener("click", () => {
+            const rec = registros.find(x => x.id === img.getAttribute("data-recid"));
+            if (rec && rec.fotos && rec.fotos.length) {
+              openLightbox(rec.fotos.map(d => ({ dataUrl: d, name: "" })), parseInt(img.getAttribute("data-fi")));
+            }
+          });
+        });
+      }
+
+      // ── photo upload ──
+      function renderPhotoGrid() {
+        const grid = $("#photoGrid");
+        if (!grid) return;
+        grid.innerHTML = currentPhotos.map((p, i) => `
+          <div class="photo-thumb">
+            <img src="${p.dataUrl}" alt="${p.name}" />
+            <button class="remove-photo" data-pi="${i}" title="Eliminar foto">✕</button>
+          </div>`).join("");
+        grid.querySelectorAll(".remove-photo").forEach(btn =>
+          btn.addEventListener("click", () => {
+            currentPhotos.splice(parseInt(btn.getAttribute("data-pi")), 1);
+            renderPhotoGrid();
+          })
+        );
+      }
+
+      function setupPhotoZone() {
+        const zone      = $("#photoZone");
+        const fileInput = $("#f_fotos");
+        if (!zone || !fileInput) return;
+        zone.addEventListener("click", () => fileInput.click());
+        zone.addEventListener("dragover",  e => { e.preventDefault(); zone.classList.add("dragover"); });
+        zone.addEventListener("dragleave", ()  => zone.classList.remove("dragover"));
+        zone.addEventListener("drop", e => {
+          e.preventDefault();
+          zone.classList.remove("dragover");
+          handleFiles(e.dataTransfer.files);
+        });
+        fileInput.addEventListener("change", () => handleFiles(fileInput.files));
+      }
+
+      function handleFiles(files) {
+        Array.from(files).forEach(file => {
+          if (!file.type.startsWith("image/")) { showToast("Solo se permiten imágenes."); return; }
+          if (file.size > 5 * 1024 * 1024)     { showToast(`"${file.name}" supera 5 MB.`); return; }
+          const reader = new FileReader();
+          reader.onload = e => { currentPhotos.push({ dataUrl: e.target.result, name: file.name }); renderPhotoGrid(); };
+          reader.readAsDataURL(file);
+        });
+      }
+
+      // ── map ──
+      function updateMap(address) {
+        const preview     = $("#mapPreview");
+        const placeholder = $("#mapPlaceholder");
+        const iframe      = $("#mapIframe");
+        if (!preview || !placeholder || !iframe) return;
+        const q = address.trim();
+        if (!q) { preview.style.display = "none"; placeholder.style.display = "flex"; return; }
+        iframe.src = `https://maps.google.com/maps?q=${encodeURIComponent(q)}&output=embed&z=15`;
+        preview.style.display = "block";
+        placeholder.style.display = "none";
+      }
+
+      // ── lightbox ──
+      function openLightbox(photos, startIndex) {
+        lbPhotos = photos;
+        lbIndex  = startIndex;
+        showLbImage();
+        $("#lightbox").classList.add("open");
+      }
+      function showLbImage() {
+        $("#lbImg").src         = lbPhotos[lbIndex].dataUrl;
+        $("#lbCounter").textContent = `${lbIndex + 1} / ${lbPhotos.length}`;
+      }
+      $("#lbClose").addEventListener("click",  () => $("#lightbox").classList.remove("open"));
+      $("#lightbox").addEventListener("click", e  => { if (e.target === $("#lightbox")) $("#lightbox").classList.remove("open"); });
+      $("#lbPrev").addEventListener("click",   () => { lbIndex = (lbIndex - 1 + lbPhotos.length) % lbPhotos.length; showLbImage(); });
+      $("#lbNext").addEventListener("click",   () => { lbIndex = (lbIndex + 1) % lbPhotos.length; showLbImage(); });
+      document.addEventListener("keydown", e => {
+        if (!$("#lightbox").classList.contains("open")) return;
+        if (e.key === "Escape")     $("#lightbox").classList.remove("open");
+        if (e.key === "ArrowLeft")  { lbIndex = (lbIndex - 1 + lbPhotos.length) % lbPhotos.length; showLbImage(); }
+        if (e.key === "ArrowRight") { lbIndex = (lbIndex + 1) % lbPhotos.length; showLbImage(); }
+      });
+
+      setupPhotoZone();
+
+      document.addEventListener("input", e => {
+        if (e.target && e.target.id === "f_direccion") {
+          clearTimeout(mapDebounce);
+          mapDebounce = setTimeout(() => updateMap(e.target.value), 800);
+        }
+      });
+
+      // ── radio helpers ──
+      function setRadio(name, value) {
+        form.querySelectorAll(`input[name="${name}"]`).forEach(el => { el.checked = el.value === value; });
+      }
+      function getRadio(name) {
+        const el = form.querySelector(`input[name="${name}"]:checked`);
+        return el ? el.value : "";
+      }
+
+      function resetForm() {
+        form.reset();
+        $("#f_tipo").value              = "Apartamento";
+        $("#f_operacion").value         = "Venta";
+        $("#f_estadoInfra").value       = "";
+        $("#f_inspeccionRealizada").value = "no";
+        setRadio("f_necesita",    "");
+        setRadio("f_contacto",    "");
+        setRadio("f_reparaciones","");
+        currentPhotos = [];
+        renderPhotoGrid();
+        updateMap("");
+        toggleBloques();
+      }
+
+      function toggleBloques() {
+        const necesita  = getRadio("f_necesita") === "si";
+        const contacto  = getRadio("f_contacto");
+        const reparaciones = getRadio("f_reparaciones");
+        $("#bloqueInspeccion").style.display     = necesita ? "block" : "none";
+        $("#bloqueNoContacto").style.display     = (necesita && contacto === "no") ? "block" : "none";
+        $("#bloqueSiContacto").style.display     = (necesita && contacto === "si") ? "block" : "none";
+        $("#bloqueDescripReparacion").style.display = (necesita && reparaciones === "si") ? "block" : "none";
+      }
+
+      form.addEventListener("change", e => {
+        if (["f_necesita", "f_contacto", "f_reparaciones"].includes(e.target.name)) toggleBloques();
+      });
+
+      function openAdd() {
+        editingId = null;
+        $("#panelTitle").textContent = "Registrar inmueble";
+        resetForm();
+        overlay.classList.add("open");
+      }
+
+      function openEdit(id) {
+        const r = registros.find(x => x.id === id);
+        if (!r) return;
+        editingId = id;
+        $("#panelTitle").textContent = "Editar inmueble " + r.codigo;
+        resetForm();
+        $("#f_codigo").value    = r.codigo;
+        $("#f_tipo").value      = r.tipo;
+        $("#f_operacion").value = r.operacion;
+        $("#f_propietario").value = r.propietario || "";
+        setRadio("f_necesita", r.necesitaInspeccion ? "si" : "no");
+        if (r.contactoPropietario === true)  setRadio("f_contacto", "si");
+        if (r.contactoPropietario === false) setRadio("f_contacto", "no");
+        $("#f_razonNoContacto").value     = r.razonNoContacto || "";
+        $("#f_fechaInspeccion").value     = r.fechaInspeccion || "";
+        $("#f_inspeccionRealizada").value = r.inspeccionRealizada ? "si" : "no";
+        $("#f_estadoInfra").value         = r.estadoInfraestructura || "";
+        if (r.necesitaReparaciones === true)  setRadio("f_reparaciones", "si");
+        else if (r.necesitaReparaciones === false) setRadio("f_reparaciones", "no");
+        else setRadio("f_reparaciones", "");
+        $("#f_descripReparaciones").value = r.descripcionReparaciones || "";
+        $("#f_notas").value    = r.notas || "";
+        $("#f_direccion").value = r.direccion || "";
+        if (r.direccion) updateMap(r.direccion);
+        currentPhotos = (r.fotos || []).map(d => ({ dataUrl: d, name: "foto" }));
+        renderPhotoGrid();
+        toggleBloques();
+        overlay.classList.add("open");
+      }
+
+      function closePanel() { overlay.classList.remove("open"); }
+
+      $("#addBtn").addEventListener("click", openAdd);
+      $("#cancelBtn").addEventListener("click", closePanel);
+      overlay.addEventListener("click", e => { if (e.target === overlay) closePanel(); });
+
+      // ── submit form ──
+      form.addEventListener("submit", async e => {
+        e.preventDefault();
+        const codigo = $("#f_codigo").value.trim();
+        if (!codigo) { showToast("El código del inmueble es obligatorio."); return; }
+
+        const dup = registros.find(r => r.codigo.toLowerCase() === codigo.toLowerCase() && r.id !== editingId);
+        if (dup) { showToast("Ya existe un inmueble con ese código."); return; }
+
+        if (getRadio("f_necesita") === "") { showToast("Indica si el inmueble necesita inspección."); return; }
+
+        const necesitaInspeccion = getRadio("f_necesita") === "si";
+        let contactoPropietario = null, razonNoContacto = "", fechaInspeccion = "";
+        let inspeccionRealizada = false, estadoInfraestructura = "", necesitaReparaciones = null, descripcionReparaciones = "";
+
+        if (necesitaInspeccion) {
+          const contactoVal = getRadio("f_contacto");
+          if (contactoVal === "") { showToast("Indica si se contactó al propietario."); return; }
+          contactoPropietario = contactoVal === "si";
+          if (!contactoPropietario) {
+            razonNoContacto = $("#f_razonNoContacto").value.trim();
+            if (!razonNoContacto) { showToast("Explica por qué no se ha contactado al propietario."); return; }
+          } else {
+            fechaInspeccion    = $("#f_fechaInspeccion").value;
+            inspeccionRealizada = $("#f_inspeccionRealizada").value === "si";
+          }
+          estadoInfraestructura = $("#f_estadoInfra").value;
+          const repVal = getRadio("f_reparaciones");
+          necesitaReparaciones = repVal === "" ? null : repVal === "si";
+          if (necesitaReparaciones) descripcionReparaciones = $("#f_descripReparaciones").value.trim();
+        }
+
+        const now = new Date().toISOString();
+        let record;
+
+        if (editingId) {
+          const r = registros.find(x => x.id === editingId);
+          Object.assign(r, {
+            codigo, tipo: $("#f_tipo").value, operacion: $("#f_operacion").value,
+            propietario: $("#f_propietario").value.trim(),
+            direccion: $("#f_direccion").value.trim(),
+            fotos: currentPhotos.map(p => p.dataUrl),
+            necesitaInspeccion, contactoPropietario, razonNoContacto, fechaInspeccion,
+            inspeccionRealizada, estadoInfraestructura, necesitaReparaciones, descripcionReparaciones,
+            notas: $("#f_notas").value.trim(), fechaActualizacion: now,
+          });
+          record = r;
+          showToast("Inmueble actualizado.");
+        } else {
+          record = {
+            id: uid(), codigo, tipo: $("#f_tipo").value, operacion: $("#f_operacion").value,
+            propietario: $("#f_propietario").value.trim(),
+            direccion: $("#f_direccion").value.trim(),
+            fotos: currentPhotos.map(p => p.dataUrl),
+            necesitaInspeccion, contactoPropietario, razonNoContacto, fechaInspeccion,
+            inspeccionRealizada, estadoInfraestructura, necesitaReparaciones, descripcionReparaciones,
+            notas: $("#f_notas").value.trim(), fechaRegistro: now, fechaActualizacion: now,
+          };
+          registros.push(record);
+          showToast("Inmueble registrado.");
+        }
+
+        closePanel();
+        render();
+        await saveRecord(record);
+      });
+
+      // ── eliminar ──
+      async function deleteRecord(id) {
+        const r = registros.find(x => x.id === id);
+        if (!r) return;
+        if (!confirm(`¿Eliminar el registro ${r.codigo}? Esta acción no se puede deshacer.`)) return;
+        registros = registros.filter(x => x.id !== id);
+        render();
+        await deleteFirestore(id);
+        showToast("Registro eliminado.");
+      }
+
+      // ── filtros ──
+      ["searchInput"].forEach(id => $("#" + id).addEventListener("input", render));
+      ["filterTipo", "filterOperacion", "filterEstado"].forEach(id => $("#" + id).addEventListener("change", render));
+
+      // ── CSV export ──
+      $("#exportBtn").addEventListener("click", () => {
+        if (registros.length === 0) { showToast("No hay registros para exportar."); return; }
+        const headers = ["Código","Tipo","Operación","Dirección","Propietario","Necesita inspección","Propietario contactado","Razón sin contacto","Fecha inspección","Inspección realizada","Estado infraestructura","Necesita reparaciones","Detalle reparaciones","Notas","Fotos","Fecha registro","Última actualización"];
+        const rows = registros.map(r => [
+          r.codigo, r.tipo, r.operacion, r.direccion||"", r.propietario||"",
+          r.necesitaInspeccion?"Sí":"No",
+          r.contactoPropietario===true?"Sí":r.contactoPropietario===false?"No":"",
+          r.razonNoContacto||"", r.fechaInspeccion||"",
+          r.inspeccionRealizada?"Sí":"No",
+          r.estadoInfraestructura||"",
+          r.necesitaReparaciones===true?"Sí":r.necesitaReparaciones===false?"No":"",
+          r.descripcionReparaciones||"", r.notas||"",
+          (r.fotos||[]).length+" fotos",
+          r.fechaRegistro||"", r.fechaActualizacion||""
+        ]);
+        const csv = [headers, ...rows].map(row => row.map(v => `"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+        const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const a   = document.createElement("a");
+        a.href = url; a.download = "registro_inmuebles.csv";
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a); URL.revokeObjectURL(url);
+      });
+
+      load();
+    }
+  </script>
+
+  <style>
+    :root{
+      --paper:#F5F1E8; --paper-2:#EDE7D8; --ink:#1B2A2F; --ink-soft:#566066;
+      --line:#D9D0BC; --card:#FFFFFF; --brand:#1B3A4B; --brand-2:#2D5A52;
+      --amber:#B9762E; --amber-bg:#FBEEDC; --terra:#A8412B; --terra-bg:#F8E2DA;
+      --green:#3F7A53; --green-bg:#E2EFE2; --info:#3A5C82; --info-bg:#E2E9F2;
+      --radius:10px; font-size:15px;
+    }
+    *{ box-sizing:border-box; }
+    body{ font-family:'Inter',system-ui,sans-serif; color:var(--ink); background:var(--paper); margin:0; }
+
+    /* ── LOGIN ── */
+    #screenLogin{
+      display:flex; align-items:center; justify-content:center;
+      min-height:100vh; background:var(--paper);
+    }
+    .login-card{
+      background:var(--card); border:1px solid var(--line);
+      border-radius:14px; padding:36px 32px; width:100%; max-width:380px;
+      box-shadow:0 4px 24px rgba(0,0,0,.08);
+    }
+    .login-card h1{
+      font-family:'Space Grotesk',sans-serif; font-size:22px;
+      color:var(--brand); margin:0 0 6px 0;
+    }
+    .login-card p{ color:var(--ink-soft); font-size:13.5px; margin:0 0 24px 0; }
+    .login-field{ margin-bottom:14px; }
+    .login-field label{ display:block; font-size:12px; font-weight:600; color:var(--ink-soft); margin-bottom:5px; }
+    .login-field input{
+      width:100%; padding:9px 11px; border:1px solid var(--line);
+      border-radius:7px; font-family:'Inter',sans-serif; font-size:14px;
+      color:var(--ink); background:#fff;
+    }
+    .login-field input:focus{ outline:2px solid var(--brand-2); }
+    .login-error{ color:var(--terra); font-size:12.5px; margin-bottom:10px; min-height:18px; }
+    .login-links{ font-size:12.5px; color:var(--ink-soft); margin-top:14px; text-align:center; }
+    .login-links a{ color:var(--brand-2); font-weight:600; cursor:pointer; text-decoration:none; }
+
+    /* ── APP HEADER ── */
+    .app-topbar{
+      display:flex; align-items:center; gap:12px; justify-content:flex-end;
+      padding:8px 28px; background:var(--card); border-bottom:1px solid var(--line);
+      font-size:13px; color:var(--ink-soft);
+    }
+    .app-topbar strong{ color:var(--ink); }
+
+    /* ── MAIN ── */
+    .registro-root{
+      font-family:'Inter',system-ui,sans-serif; color:var(--ink); background:var(--paper);
+      min-height:calc(100vh - 44px); padding:28px 28px 60px; max-width:1280px; margin:0 auto;
+    }
+    .header-row{ display:flex; justify-content:space-between; align-items:flex-start; gap:24px; flex-wrap:wrap; margin-bottom:22px; }
+    .title-block h1{ font-family:'Space Grotesk',sans-serif; font-size:26px; font-weight:700; margin:0 0 4px 0; color:var(--brand); letter-spacing:-.01em; }
+    .title-block p{ margin:0; color:var(--ink-soft); font-size:13.5px; max-width:520px; }
+    .eyebrow{ font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--brand-2); font-weight:600; margin-bottom:6px; display:block; }
+
+    .stats-row{ display:flex; gap:10px; flex-wrap:wrap; }
+    .stat-card{ position:relative; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px 14px 9px; min-width:108px; }
+    .stat-card::before,.stat-card::after{ content:""; position:absolute; width:7px; height:7px; border-color:var(--brand-2); opacity:.55; }
+    .stat-card::before{ top:-1px; left:-1px; border-top:1.5px solid; border-left:1.5px solid; }
+    .stat-card::after{ bottom:-1px; right:-1px; border-bottom:1.5px solid; border-right:1.5px solid; }
+    .stat-num{ font-family:'JetBrains Mono',monospace; font-size:22px; font-weight:600; line-height:1; color:var(--ink); }
+    .stat-label{ font-size:11px; color:var(--ink-soft); margin-top:3px; }
+    .stat-card.warn .stat-num{ color:var(--amber); }
+    .stat-card.danger .stat-num{ color:var(--terra); }
+    .stat-card.ok .stat-num{ color:var(--green); }
+
+    .toolbar{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:16px; padding-bottom:16px; border-bottom:1px solid var(--line); }
+    .toolbar input[type="text"],.toolbar select{ font-family:'Inter',sans-serif; font-size:13.5px; padding:8px 10px; border:1px solid var(--line); border-radius:7px; background:var(--card); color:var(--ink); }
+    .toolbar input[type="text"]{ min-width:180px; }
+    .spacer{ flex:1; }
+    .btn{ font-family:'Inter',sans-serif; font-size:13.5px; font-weight:600; padding:9px 16px; border-radius:7px; border:1px solid transparent; cursor:pointer; transition:transform .08s ease,opacity .15s ease; }
+    .btn:active{ transform:scale(.97); }
+    .btn-primary{ background:var(--brand); color:#fff; }
+    .btn-primary:hover{ background:var(--brand-2); }
+    .btn-ghost{ background:transparent; border-color:var(--line); color:var(--ink); }
+    .btn-ghost:hover{ background:var(--paper-2); }
+    .btn-text{ background:none; border:none; color:var(--brand-2); font-weight:600; padding:4px 6px; cursor:pointer; font-size:13px; }
+    .btn-text.danger{ color:var(--terra); }
+
+    table{ width:100%; border-collapse:collapse; }
+    thead th{ text-align:left; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); font-weight:600; padding:0 12px 8px; border-bottom:1px solid var(--line); }
+    tbody tr{ border-bottom:1px solid var(--line); }
+    tbody tr:hover{ background:rgba(255,255,255,.6); }
+    tbody td{ padding:11px 12px; font-size:13.5px; vertical-align:top; }
+    .codigo-cell{ font-family:'JetBrains Mono',monospace; font-weight:600; color:var(--brand); }
+    .muted{ color:var(--ink-soft); font-size:12.5px; }
+
+    .pill{ display:inline-block; font-size:11.5px; font-weight:600; padding:3px 9px; border-radius:100px; white-space:nowrap; }
+    .pill-neutral{ background:var(--paper-2); color:var(--ink-soft); }
+    .pill-warning{ background:var(--amber-bg); color:var(--amber); }
+    .pill-info{ background:var(--info-bg); color:var(--info); }
+    .pill-success{ background:var(--green-bg); color:var(--green); }
+    .pill-danger{ background:var(--terra-bg); color:var(--terra); }
+
+    .empty-state{ text-align:center; padding:60px 20px; color:var(--ink-soft); }
+    .empty-state .big{ font-family:'Space Grotesk',sans-serif; font-size:17px; color:var(--ink); margin-bottom:6px; }
+
+    .overlay{ position:fixed; inset:0; background:rgba(27,42,47,.42); display:none; align-items:flex-start; justify-content:flex-end; z-index:50; }
+    .overlay.open{ display:flex; }
+    .panel{ width:420px; max-width:92vw; height:100%; background:var(--paper); box-shadow:-12px 0 30px rgba(0,0,0,.18); overflow-y:auto; padding:24px 22px 40px; }
+    .panel h2{ font-family:'Space Grotesk',sans-serif; font-size:19px; color:var(--brand); margin:0 0 18px 0; }
+    .field{ margin-bottom:15px; }
+    .field label{ display:block; font-size:12px; font-weight:600; color:var(--ink-soft); margin-bottom:5px; }
+    .field input[type="text"],.field input[type="date"],.field select,.field textarea{ width:100%; font-family:'Inter',sans-serif; font-size:13.5px; padding:8px 10px; border:1px solid var(--line); border-radius:7px; background:#fff; color:var(--ink); }
+    .field textarea{ resize:vertical; min-height:60px; }
+    .radio-row{ display:flex; gap:14px; }
+    .radio-row label{ display:flex; align-items:center; gap:6px; font-size:13px; font-weight:500; color:var(--ink); margin:0; }
+    .subblock{ border-left:2px solid var(--line); padding-left:12px; margin-top:4px; margin-bottom:15px; }
+    .panel-actions{ display:flex; gap:8px; margin-top:22px; padding-top:16px; border-top:1px solid var(--line); }
+    .req::after{ content:" *"; color:var(--terra); }
+    .hint{ font-size:11.5px; color:var(--ink-soft); margin-top:4px; }
+
+    .photo-upload-zone{ border:2px dashed var(--line); border-radius:var(--radius); padding:16px 12px; text-align:center; cursor:pointer; transition:border-color .15s,background .15s; background:#fff; }
+    .photo-upload-zone:hover,.photo-upload-zone.dragover{ border-color:var(--brand-2); background:var(--paper-2); }
+    .photo-upload-zone input[type="file"]{ display:none; }
+    .photo-upload-zone .upload-icon{ font-size:22px; margin-bottom:4px; }
+    .photo-upload-zone .upload-label{ font-size:12.5px; color:var(--ink-soft); }
+    .photo-upload-zone .upload-label strong{ color:var(--brand-2); }
+    .photo-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-top:8px; }
+    .photo-thumb{ position:relative; aspect-ratio:1; border-radius:6px; overflow:hidden; border:1px solid var(--line); }
+    .photo-thumb img{ width:100%; height:100%; object-fit:cover; display:block; }
+    .photo-thumb .remove-photo{ position:absolute; top:3px; right:3px; background:rgba(0,0,0,.55); color:#fff; border:none; border-radius:50%; width:20px; height:20px; font-size:12px; line-height:20px; text-align:center; cursor:pointer; padding:0; }
+    .map-preview{ border-radius:var(--radius); overflow:hidden; border:1px solid var(--line); margin-top:6px; height:160px; background:var(--paper-2); display:none; }
+    .map-preview iframe{ width:100%; height:100%; border:none; }
+    .map-placeholder{ height:160px; display:flex; align-items:center; justify-content:center; color:var(--ink-soft); font-size:12.5px; gap:6px; border:1px solid var(--line); border-radius:var(--radius); margin-top:6px; background:var(--paper-2); }
+    .photo-strip{ display:flex; gap:4px; flex-wrap:wrap; }
+    .photo-strip img{ width:36px; height:36px; object-fit:cover; border-radius:4px; border:1px solid var(--line); cursor:pointer; transition:opacity .15s; }
+    .photo-strip img:hover{ opacity:.8; }
+    .photo-count{ font-size:11px; color:var(--ink-soft); align-self:center; white-space:nowrap; }
+
+    .lightbox{ position:fixed; inset:0; background:rgba(0,0,0,.82); display:none; align-items:center; justify-content:center; z-index:200; padding:20px; }
+    .lightbox.open{ display:flex; }
+    .lightbox img{ max-width:90vw; max-height:88vh; border-radius:8px; object-fit:contain; box-shadow:0 8px 40px rgba(0,0,0,.6); }
+    .lightbox-close{ position:fixed; top:16px; right:20px; background:rgba(255,255,255,.15); border:none; color:#fff; font-size:22px; line-height:1; width:38px; height:38px; border-radius:50%; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+    .lightbox-nav{ position:fixed; top:50%; transform:translateY(-50%); background:rgba(255,255,255,.15); border:none; color:#fff; font-size:20px; width:42px; height:42px; border-radius:50%; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+    .lightbox-nav.prev{ left:16px; } .lightbox-nav.next{ right:16px; }
+    .lightbox-counter{ position:fixed; bottom:20px; left:50%; transform:translateX(-50%); color:rgba(255,255,255,.7); font-size:13px; }
+
+    .toast{ position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:var(--ink); color:#fff; font-size:13px; font-weight:500; padding:9px 16px; border-radius:7px; z-index:80; opacity:0; transition:opacity .25s ease; }
+    .toast.show{ opacity:1; }
+    .loading-row{ text-align:center; padding:40px; color:var(--ink-soft); }
+
+    @media (max-width:760px){
+      table thead{ display:none; }
+      tbody tr{ display:block; padding:10px 0; }
+      tbody td{ display:flex; justify-content:space-between; gap:10px; padding:5px 4px; }
+      tbody td::before{ content:attr(data-label); font-weight:600; color:var(--ink-soft); font-size:11px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ════════════════ PANTALLA LOGIN ════════════════ -->
+<div id="screenLogin" style="display:flex">
+  <div class="login-card">
+    <h1 id="loginTitle">Iniciar sesión</h1>
+    <p>Sistema de registro de inspección de inmuebles</p>
+
+    <div class="login-field">
+      <label>Correo electrónico</label>
+      <input type="email" id="loginEmail" placeholder="usuario@correo.com" autocomplete="email" required />
+    </div>
+    <div class="login-field">
+      <label>Contraseña</label>
+      <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password" required />
+    </div>
+
+    <div class="login-error" id="loginError"></div>
+
+    <form id="loginForm" style="display:contents">
+      <button type="submit" id="loginSubmit" class="btn btn-primary" style="width:100%">Entrar</button>
+    </form>
+    <form id="registerForm" style="display:contents">
+      <button type="submit" id="registerSubmit" class="btn btn-primary" style="width:100%;display:none">Crear cuenta</button>
+    </form>
+
+    <div class="login-links">
+      <a id="showRegister">¿No tienes cuenta? Crear una</a>
+      <a id="showLogin" style="display:none">¿Ya tienes cuenta? Iniciar sesión</a>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════ APP PRINCIPAL ════════════════ -->
+<div id="screenApp" style="display:none">
+
+  <div class="app-topbar">
+    <span>👤 <strong id="userEmail"></strong></span>
+    <button class="btn btn-ghost" id="logoutBtn" style="padding:5px 12px;font-size:12.5px">Cerrar sesión</button>
+  </div>
+
+  <div class="registro-root" id="root">
+    <div class="header-row">
+      <div class="title-block">
+        <span class="eyebrow">Post-sismo · Control de inmuebles</span>
+        <h1>Registro de inspección de inmuebles</h1>
+        <p>Seguimiento de contacto con propietarios, fechas de inspección y estado estructural.</p>
+      </div>
+      <div class="stats-row" id="statsRow"></div>
+    </div>
+
+    <div class="toolbar">
+      <input type="text" id="searchInput" placeholder="Buscar por código…" />
+      <select id="filterTipo">
+        <option value="">Todos los tipos</option>
+        <option>Apartamento</option><option>Casa</option><option>Terreno</option>
+        <option>Finca</option><option>Townhouse</option><option>Penthouse</option><option>Oficina</option>
+      </select>
+      <select id="filterOperacion">
+        <option value="">Venta y alquiler</option>
+        <option>Venta</option><option>Alquiler</option>
+      </select>
+      <select id="filterEstado">
+        <option value="">Todos los estados</option>
+        <option value="no_requiere">No requiere inspección</option>
+        <option value="pendiente_contacto">Pendiente de contacto</option>
+        <option value="no_contactado">Propietario no contactado</option>
+        <option value="programada">Inspección programada</option>
+        <option value="realizada">Inspección realizada</option>
+      </select>
+      <div class="spacer"></div>
+      <button class="btn btn-ghost" id="exportBtn">Exportar CSV</button>
+      <button class="btn btn-primary" id="addBtn">+ Registrar inmueble</button>
+    </div>
+
+    <div id="tableWrap">
+      <div class="loading-row">Cargando registros…</div>
+    </div>
+  </div>
+
+  <!-- Panel lateral -->
+  <div class="overlay" id="overlay">
+    <div class="panel">
+      <h2 id="panelTitle">Registrar inmueble</h2>
+      <form id="propForm">
+        <div class="field"><label class="req">Código del inmueble</label><input type="text" id="f_codigo" placeholder="INM-0001" /></div>
+        <div class="field"><label class="req">Tipo de inmueble</label>
+          <select id="f_tipo"><option>Apartamento</option><option>Casa</option><option>Terreno</option><option>Finca</option><option>Townhouse</option><option>Penthouse</option><option>Oficina</option></select>
+        </div>
+        <div class="field"><label class="req">Operación</label>
+          <select id="f_operacion"><option>Venta</option><option>Alquiler</option></select>
+        </div>
+        <div class="field"><label>Propietario / contacto (opcional)</label><input type="text" id="f_propietario" placeholder="Nombre y teléfono" /></div>
+        <div class="field">
+          <label>Dirección / Ubicación</label>
+          <input type="text" id="f_direccion" placeholder="Ej: Av. Principal, Urb. Las Mercedes, Caracas" />
+          <div class="map-placeholder" id="mapPlaceholder"><span>📍</span><span>Escribe la dirección para ver el mapa</span></div>
+          <div class="map-preview" id="mapPreview"><iframe id="mapIframe" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe></div>
+          <div class="hint">La ubicación se guardará junto al registro.</div>
+        </div>
+        <div class="field">
+          <label>Fotos de los daños</label>
+          <div class="photo-upload-zone" id="photoZone">
+            <input type="file" id="f_fotos" accept="image/*" multiple />
+            <div class="upload-icon">📷</div>
+            <div class="upload-label"><strong>Haz clic o arrastra</strong> las fotos aquí<br>JPG, PNG, WEBP — máx. 5 MB c/u</div>
+          </div>
+          <div class="photo-grid" id="photoGrid"></div>
+        </div>
+        <div class="field"><label class="req">¿Necesita inspección?</label>
+          <div class="radio-row">
+            <label><input type="radio" name="f_necesita" value="si"> Sí</label>
+            <label><input type="radio" name="f_necesita" value="no"> No</label>
+          </div>
+        </div>
+        <div id="bloqueInspeccion" style="display:none">
+          <div class="field"><label class="req">¿Se contactó al propietario?</label>
+            <div class="radio-row">
+              <label><input type="radio" name="f_contacto" value="si"> Sí</label>
+              <label><input type="radio" name="f_contacto" value="no"> No</label>
+            </div>
+          </div>
+          <div class="subblock" id="bloqueNoContacto" style="display:none">
+            <div class="field"><label class="req">¿Por qué no se ha contactado?</label><textarea id="f_razonNoContacto" placeholder="Ej: número fuera de servicio…"></textarea></div>
+          </div>
+          <div class="subblock" id="bloqueSiContacto" style="display:none">
+            <div class="field"><label>Fecha de la inspección</label><input type="date" id="f_fechaInspeccion" /></div>
+            <div class="field"><label>Estado de la inspección</label>
+              <select id="f_inspeccionRealizada"><option value="no">Pendiente de realizar</option><option value="si">Realizada</option></select>
+            </div>
+          </div>
+          <div class="field"><label>Estado de la infraestructura</label>
+            <select id="f_estadoInfra">
+              <option value="">Sin evaluar todavía</option>
+              <option>Sin daños visibles</option><option>Daños leves</option>
+              <option>Daños moderados</option><option>Daños severos</option><option>Colapso / inhabitable</option>
+            </select>
+          </div>
+          <div class="field"><label>¿Necesita reparaciones?</label>
+            <div class="radio-row">
+              <label><input type="radio" name="f_reparaciones" value="si"> Sí</label>
+              <label><input type="radio" name="f_reparaciones" value="no"> No</label>
+              <label><input type="radio" name="f_reparaciones" value="" checked> Aún no se sabe</label>
+            </div>
+          </div>
+          <div class="subblock" id="bloqueDescripReparacion" style="display:none">
+            <div class="field"><label>Detalle de las reparaciones</label><textarea id="f_descripReparaciones" placeholder="Ej: grietas en muro de carga…"></textarea></div>
+          </div>
+        </div>
+        <div class="field"><label>Notas adicionales</label><textarea id="f_notas" placeholder="Cualquier otra observación…"></textarea></div>
+        <div class="panel-actions">
+          <button type="submit" class="btn btn-primary">Guardar</button>
+          <button type="button" class="btn btn-ghost" id="cancelBtn">Cancelar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+</div><!-- /screenApp -->
+
+<!-- Lightbox -->
+<div class="lightbox" id="lightbox">
+  <button class="lightbox-close" id="lbClose">✕</button>
+  <button class="lightbox-nav prev" id="lbPrev">‹</button>
+  <img id="lbImg" src="" alt="Foto del inmueble" />
+  <button class="lightbox-nav next" id="lbNext">›</button>
+  <div class="lightbox-counter" id="lbCounter"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+</body>
+</html>
