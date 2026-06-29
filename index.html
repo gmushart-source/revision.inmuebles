@@ -18,30 +18,13 @@
       getFirestore, collection, doc, getDocs, setDoc, deleteDoc, query, where
     } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
-    // Import the functions you need from the SDKs you need
-import { initializeApp } from "firebase/app";
-// TODO: Add SDKs for Firebase products that you want to use
-// https://firebase.google.com/docs/web/setup#available-libraries
-
-// Your web app's Firebase configuration
-const firebaseConfig = {
-  apiKey: "AIzaSyAMCnWnRyFjEb-C3LGH-r4xEHrlxV1BdXE",
-  authDomain: "revision-inmuebles.firebaseapp.com",
-  projectId: "revision-inmuebles",
-  storageBucket: "revision-inmuebles.firebasestorage.app",
-  messagingSenderId: "25128639907",
-  appId: "1:25128639907:web:5586af6b316cdbf7b54e16"
-};
-
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
     const firebaseConfig = {
-      apiKey:            "TU_API_KEY",            // ← reemplazar
-      authDomain:        "TU_PROJECT_ID.firebaseapp.com",  // ← reemplazar
-      projectId:         "TU_PROJECT_ID",         // ← reemplazar
-      storageBucket:     "TU_PROJECT_ID.appspot.com",      // ← reemplazar
-      messagingSenderId: "TU_MESSAGING_SENDER_ID", // ← reemplazar
-      appId:             "TU_APP_ID"              // ← reemplazar
+      apiKey:            "AIzaSyAMCnWnRyFjEb-C3LGH-r4xEHrlxV1BdXE",
+      authDomain:        "revision-inmuebles.firebaseapp.com",
+      projectId:         "revision-inmuebles",
+      storageBucket:     "revision-inmuebles.firebasestorage.app",
+      messagingSenderId: "25128639907",
+      appId:             "1:25128639907:web:5586af6b316cdbf7b54e16"
     };
 
     const app  = initializeApp(firebaseConfig);
