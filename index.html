@@ -3,11 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Registro de Inmuebles</title>
+  <title>Sistema de Inspección de Inmuebles</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
 
-  <!-- ✅ Firebase SDK (versión modular v10) -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import {
@@ -15,7 +14,7 @@
       sendPasswordResetEmail, signOut
     } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
     import {
-      getFirestore, collection, doc, getDocs, setDoc, deleteDoc, query, where
+      getFirestore, collection, doc, getDocs, setDoc, deleteDoc, query, where, writeBatch
     } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
     const firebaseConfig = {
@@ -31,18 +30,15 @@
     const auth = getAuth(app);
     const db   = getFirestore(app);
 
-    // ── pantallas ──
     const screenLogin = document.getElementById("screenLogin");
     const screenApp   = document.getElementById("screenApp");
     const loginError  = document.getElementById("loginError");
     const userEmail   = document.getElementById("userEmail");
 
     function showLogin() {
-      // Limpiar campos al volver al login
       document.getElementById("loginEmail").value    = "";
       document.getElementById("loginPassword").value = "";
       loginError.textContent = "";
-      // Resetear ojo de contraseña
       const pwInput = document.getElementById("loginPassword");
       const eyeBtn  = document.getElementById("togglePassword");
       pwInput.type = "password";
@@ -57,13 +53,11 @@
       initApp(db, user);
     }
 
-    // ── auth state ──
     onAuthStateChanged(auth, user => {
       if (user) showApp(user);
       else       showLogin();
     });
 
-    // ── login form ──
     document.getElementById("loginForm").addEventListener("submit", async e => {
       e.preventDefault();
       loginError.textContent = "";
@@ -76,10 +70,8 @@
       }
     });
 
-    // ── logout ──
     document.getElementById("logoutBtn").addEventListener("click", () => signOut(auth));
 
-    // ── mostrar/ocultar contraseña ──
     document.getElementById("togglePassword").addEventListener("click", () => {
       const input = document.getElementById("loginPassword");
       const btn   = document.getElementById("togglePassword");
@@ -92,7 +84,6 @@
       }
     });
 
-    // ── recuperar contraseña ──
     document.getElementById("forgotPassword").addEventListener("click", async e => {
       e.preventDefault();
       const email = document.getElementById("loginEmail").value.trim();
@@ -113,83 +104,138 @@
 
     function traducirError(code) {
       const map = {
-        "auth/invalid-email":           "Correo electrónico inválido.",
-        "auth/user-not-found":          "No existe una cuenta con ese correo.",
-        "auth/wrong-password":          "Contraseña incorrecta.",
-        "auth/invalid-credential":      "Correo o contraseña incorrectos.",
-        "auth/too-many-requests":       "Demasiados intentos. Intenta más tarde.",
+        "auth/invalid-email":      "Correo electrónico inválido.",
+        "auth/user-not-found":     "No existe una cuenta con ese correo.",
+        "auth/wrong-password":     "Contraseña incorrecta.",
+        "auth/invalid-credential": "Correo o contraseña incorrectos.",
+        "auth/too-many-requests":  "Demasiados intentos. Intenta más tarde.",
       };
       return map[code] || "Error: " + code;
     }
 
     // ====================================================
-    //   LÓGICA PRINCIPAL DE LA APP
+    //   LÓGICA PRINCIPAL
     // ====================================================
     function initApp(db, user) {
-      const COLL = "registros";
+      const COLL_REG = "registros";
+      const COLL_INM = "catalogo_inmuebles";
+
       let registros = [];
-      let editingId = null;
+      let catalogo  = [];     // ← catálogo de inmuebles del otro sistema
+      let editingId   = null;
+      let editingInmId = null;
       let currentPhotos = [];
-      let mapDebounce = null;
+      let mapDebounce   = null;
       let lbPhotos = [], lbIndex = 0;
+      let activeTab = "revisiones"; // "revisiones" | "catalogo"
 
       const $ = sel => document.querySelector(sel);
-      const tableWrap = $("#tableWrap");
-      const statsRow  = $("#statsRow");
-      const overlay   = $("#overlay");
-      const form      = $("#propForm");
-      const toastEl   = $("#toast");
+      const tableWrap   = $("#tableWrap");
+      const statsRow    = $("#statsRow");
+      const overlay     = $("#overlay");
+      const form        = $("#propForm");
+      const toastEl     = $("#toast");
 
-      function showToast(msg) {
+      // ── tabs ──
+      function setTab(tab) {
+        activeTab = tab;
+        document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+        $("#viewRevisiones").style.display = tab === "revisiones" ? "block" : "none";
+        $("#viewCatalogo").style.display   = tab === "catalogo"   ? "block" : "none";
+        if (tab === "catalogo") renderCatalogo();
+        if (tab === "revisiones") render();
+      }
+
+      document.querySelectorAll(".tab-btn").forEach(b =>
+        b.addEventListener("click", () => setTab(b.dataset.tab))
+      );
+
+      // ── toast ──
+      function showToast(msg, type = "info") {
         toastEl.textContent = msg;
-        toastEl.classList.add("show");
-        setTimeout(() => toastEl.classList.remove("show"), 2200);
+        toastEl.className = "toast show " + type;
+        setTimeout(() => toastEl.classList.remove("show"), 2600);
       }
 
       function uid() {
         return "r_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
       }
 
-      // ── Firestore: cargar ──
-      async function load() {
+      // ── Firestore: cargar todo ──
+      async function loadAll() {
         try {
-          const q = query(collection(db, COLL), where("uid", "==", user.uid));
-          const snap = await getDocs(q);
-          registros = snap.docs.map(d => d.data());
+          const [snapReg, snapInm] = await Promise.all([
+            getDocs(query(collection(db, COLL_REG), where("uid", "==", user.uid))),
+            getDocs(query(collection(db, COLL_INM), where("uid", "==", user.uid)))
+          ]);
+          registros = snapReg.docs.map(d => d.data());
+          catalogo  = snapInm.docs.map(d => d.data());
         } catch (e) {
           console.error(e);
           registros = [];
+          catalogo  = [];
         }
+        populateInmuebleSelect();
         render();
+        renderCatalogo();
       }
 
-      // ── Firestore: guardar un registro ──
       async function saveRecord(r) {
-        try {
-          await setDoc(doc(db, COLL, r.id), { ...r, uid: user.uid });
-        } catch (e) {
-          showToast("Error al guardar. Verifica tu conexión.");
-        }
+        try { await setDoc(doc(db, COLL_REG, r.id), { ...r, uid: user.uid }); }
+        catch (e) { showToast("Error al guardar. Verifica tu conexión.", "danger"); }
       }
 
-      // ── Firestore: eliminar ──
       async function deleteFirestore(id) {
-        try {
-          await deleteDoc(doc(db, COLL, id));
-        } catch (e) {
-          showToast("Error al eliminar.");
-        }
+        try { await deleteDoc(doc(db, COLL_REG, id)); }
+        catch (e) { showToast("Error al eliminar.", "danger"); }
       }
+
+      async function saveInmueble(inm) {
+        try { await setDoc(doc(db, COLL_INM, inm.id), { ...inm, uid: user.uid }); }
+        catch (e) { showToast("Error al guardar inmueble.", "danger"); }
+      }
+
+      async function deleteInmueble(id) {
+        try { await deleteDoc(doc(db, COLL_INM, id)); }
+        catch (e) { showToast("Error al eliminar inmueble.", "danger"); }
+      }
+
+      // ── poblar select de inmueble en form de revisión ──
+      function populateInmuebleSelect() {
+        const sel = $("#f_inmueble_sel");
+        if (!sel) return;
+        const prev = sel.value;
+        sel.innerHTML = `<option value="">— Seleccionar inmueble del catálogo —</option>` +
+          catalogo
+            .sort((a,b) => a.codigo.localeCompare(b.codigo))
+            .map(inm => `<option value="${inm.id}">${escapeHtml(inm.codigo)} · ${escapeHtml(inm.tipo)} · ${escapeHtml(inm.direccion||'Sin dirección')}</option>`)
+            .join("");
+        if (prev) sel.value = prev;
+      }
+
+      // ── cuando eligen un inmueble del select, pre-llenar campos ──
+      document.addEventListener("change", e => {
+        if (e.target && e.target.id === "f_inmueble_sel") {
+          const inm = catalogo.find(x => x.id === e.target.value);
+          if (!inm) return;
+          $("#f_codigo").value      = inm.codigo;
+          $("#f_tipo").value        = inm.tipo || "Apartamento";
+          $("#f_operacion").value   = inm.operacion || "Venta";
+          $("#f_propietario").value = inm.propietario || "";
+          $("#f_direccion").value   = inm.direccion || "";
+          if (inm.direccion) updateMap(inm.direccion);
+        }
+      });
 
       // ── estadoGeneral ──
       function estadoGeneral(r) {
-        if (!r.necesitaInspeccion) return { label: "No requiere inspección", tone: "neutral",  key: "no_requiere" };
-        if (r.contactoPropietario === false) return { label: "Propietario no contactado", tone: "warning", key: "no_contactado" };
+        if (!r.necesitaInspeccion) return { label: "No requiere", tone: "neutral", key: "no_requiere" };
+        if (r.contactoPropietario === false) return { label: "Sin contacto", tone: "warning", key: "no_contactado" };
         if (r.contactoPropietario === true) {
-          if (r.inspeccionRealizada) return { label: "Inspección realizada", tone: "success", key: "realizada" };
-          return { label: "Inspección programada", tone: "info", key: "programada" };
+          if (r.inspeccionRealizada) return { label: "Realizada", tone: "success", key: "realizada" };
+          return { label: "Programada", tone: "info", key: "programada" };
         }
-        return { label: "Pendiente de contacto", tone: "warning", key: "pendiente_contacto" };
+        return { label: "Pendiente", tone: "warning", key: "pendiente_contacto" };
       }
 
       function infraTone(e) {
@@ -208,29 +254,316 @@
 
       function fmtFecha(iso) {
         if (!iso) return "—";
-        const d = new Date(iso);
-        return d.toLocaleDateString("es-VE");
+        return new Date(iso).toLocaleDateString("es-VE");
       }
 
       function escapeHtml(s) {
-        return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+        return String(s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
       }
 
-      // ── renderStats ──
+      // ────────────────────────────────────────────────
+      //  CATÁLOGO DE INMUEBLES
+      // ────────────────────────────────────────────────
+      function renderCatalogo() {
+        const wrap = $("#catalogoWrap");
+        if (!wrap) return;
+
+        // stats del catálogo
+        const total     = catalogo.length;
+        const revisados = catalogo.filter(inm => registros.some(r => r.codigo === inm.codigo && r.inspeccionRealizada)).length;
+        const enProceso = catalogo.filter(inm => {
+          const recs = registros.filter(r => r.codigo === inm.codigo);
+          return recs.length > 0 && !recs.some(r => r.inspeccionRealizada);
+        }).length;
+        const sinRevision = total - revisados - enProceso;
+
+        $("#catStatsRow").innerHTML = [
+          { n: total,       l: "En catálogo",       cls: "" },
+          { n: revisados,   l: "Con inspección",    cls: "ok" },
+          { n: enProceso,   l: "En proceso",        cls: "info-stat" },
+          { n: sinRevision, l: "Sin revisión",      cls: "warn" },
+        ].map(c => `<div class="stat-card ${c.cls}"><div class="stat-num">${c.n}</div><div class="stat-label">${c.l}</div></div>`).join("");
+
+        if (catalogo.length === 0) {
+          wrap.innerHTML = `<div class="empty-state">
+            <div class="big">Catálogo vacío</div>
+            <div>Agrega inmuebles uno a uno o importa desde CSV.</div>
+          </div>`;
+          return;
+        }
+
+        const q = ($("#catSearch")||{}).value?.trim().toLowerCase() || "";
+        const list = catalogo
+          .filter(inm => !q || inm.codigo.toLowerCase().includes(q) || (inm.direccion||"").toLowerCase().includes(q))
+          .sort((a,b) => a.codigo.localeCompare(b.codigo));
+
+        wrap.innerHTML = `<table>
+          <thead><tr>
+            <th>Código</th><th>Tipo</th><th>Operación</th><th>Propietario</th><th>Dirección</th>
+            <th>Inspecciones</th><th>Último estado</th><th>Acciones</th>
+          </tr></thead>
+          <tbody>${list.map(inm => renderCatRow(inm)).join("")}</tbody>
+        </table>`;
+
+        wrap.querySelectorAll("[data-edit-inm]").forEach(btn =>
+          btn.addEventListener("click", () => openEditInm(btn.getAttribute("data-edit-inm")))
+        );
+        wrap.querySelectorAll("[data-del-inm]").forEach(btn =>
+          btn.addEventListener("click", () => delInm(btn.getAttribute("data-del-inm")))
+        );
+        wrap.querySelectorAll("[data-add-rev]").forEach(btn =>
+          btn.addEventListener("click", () => {
+            setTab("revisiones");
+            openAdd(btn.getAttribute("data-add-rev"));
+          })
+        );
+      }
+
+      function renderCatRow(inm) {
+        const recsDeEste = registros.filter(r => r.codigo === inm.codigo);
+        const totalRevs  = recsDeEste.length;
+        const realizada  = recsDeEste.some(r => r.inspeccionRealizada);
+        const ultimoRec  = recsDeEste.sort((a,b) => (b.fechaActualizacion||"").localeCompare(a.fechaActualizacion||""))[0];
+        const ultimoEst  = ultimoRec ? estadoGeneral(ultimoRec) : null;
+
+        const progresoBadge = realizada
+          ? `<span class="pill pill-success">✓ Inspeccionado</span>`
+          : totalRevs > 0
+            ? `<span class="pill pill-info">${totalRevs} revisión${totalRevs>1?"es":""}</span>`
+            : `<span class="pill pill-neutral">Sin revisiones</span>`;
+
+        return `<tr>
+          <td data-label="Código"><span class="codigo-cell">${escapeHtml(inm.codigo)}</span></td>
+          <td data-label="Tipo">${escapeHtml(inm.tipo)}</td>
+          <td data-label="Operación">${escapeHtml(inm.operacion||"—")}</td>
+          <td data-label="Propietario"><span class="muted">${escapeHtml(inm.propietario||"—")}</span></td>
+          <td data-label="Dirección"><span class="muted" style="font-size:12px">${escapeHtml(inm.direccion||"—")}</span></td>
+          <td data-label="Inspecciones">${progresoBadge}</td>
+          <td data-label="Último estado">${ultimoEst ? `<span class="pill pill-${ultimoEst.tone}">${ultimoEst.label}</span>` : '<span class="muted">—</span>'}</td>
+          <td data-label="Acciones">
+            <button class="btn-text" data-add-rev="${inm.id}" title="Nueva revisión">＋ Revisión</button>
+            <button class="btn-text" data-edit-inm="${inm.id}">Editar</button>
+            <button class="btn-text danger" data-del-inm="${inm.id}">Eliminar</button>
+          </td>
+        </tr>`;
+      }
+
+      // ── Formulario de inmueble (catálogo) ──
+      const ovInm  = $("#overlayInm");
+      const formInm = $("#inmForm");
+
+      function openAddInm() {
+        editingInmId = null;
+        $("#inmPanelTitle").textContent = "Agregar inmueble al catálogo";
+        formInm.reset();
+        ovInm.classList.add("open");
+      }
+
+      function openEditInm(id) {
+        const inm = catalogo.find(x => x.id === id);
+        if (!inm) return;
+        editingInmId = id;
+        $("#inmPanelTitle").textContent = "Editar " + inm.codigo;
+        $("#inm_codigo").value     = inm.codigo;
+        $("#inm_tipo").value       = inm.tipo;
+        $("#inm_operacion").value  = inm.operacion || "Venta";
+        $("#inm_propietario").value= inm.propietario || "";
+        $("#inm_direccion").value  = inm.direccion || "";
+        $("#inm_notas").value      = inm.notas || "";
+        ovInm.classList.add("open");
+      }
+
+      function closeInmPanel() { ovInm.classList.remove("open"); }
+
+      $("#addInmBtn").addEventListener("click", openAddInm);
+      $("#cancelInmBtn").addEventListener("click", closeInmPanel);
+      ovInm.addEventListener("click", e => { if (e.target === ovInm) closeInmPanel(); });
+
+      formInm.addEventListener("submit", async e => {
+        e.preventDefault();
+        const codigo = $("#inm_codigo").value.trim().toUpperCase();
+        if (!codigo) { showToast("El código es obligatorio.", "danger"); return; }
+
+        const dup = catalogo.find(x => x.codigo.toUpperCase() === codigo && x.id !== editingInmId);
+        if (dup) { showToast("Ya existe un inmueble con ese código.", "danger"); return; }
+
+        const now = new Date().toISOString();
+        let inm;
+        if (editingInmId) {
+          inm = catalogo.find(x => x.id === editingInmId);
+          Object.assign(inm, {
+            codigo, tipo: $("#inm_tipo").value, operacion: $("#inm_operacion").value,
+            propietario: $("#inm_propietario").value.trim(),
+            direccion: $("#inm_direccion").value.trim(),
+            notas: $("#inm_notas").value.trim(),
+            fechaActualizacion: now,
+          });
+          showToast("Inmueble actualizado.", "success");
+        } else {
+          inm = {
+            id: uid(), codigo, tipo: $("#inm_tipo").value, operacion: $("#inm_operacion").value,
+            propietario: $("#inm_propietario").value.trim(),
+            direccion: $("#inm_direccion").value.trim(),
+            notas: $("#inm_notas").value.trim(),
+            fechaRegistro: now, fechaActualizacion: now,
+          };
+          catalogo.push(inm);
+          showToast("Inmueble agregado al catálogo.", "success");
+        }
+
+        closeInmPanel();
+        populateInmuebleSelect();
+        renderCatalogo();
+        await saveInmueble(inm);
+      });
+
+      async function delInm(id) {
+        const inm = catalogo.find(x => x.id === id);
+        if (!inm) return;
+        const revsCount = registros.filter(r => r.codigo === inm.codigo).length;
+        const msg = revsCount > 0
+          ? `¿Eliminar ${inm.codigo} del catálogo? Tiene ${revsCount} revisión(es) asociada(s). Los registros de revisión se conservarán.`
+          : `¿Eliminar ${inm.codigo} del catálogo?`;
+        if (!confirm(msg)) return;
+        catalogo = catalogo.filter(x => x.id !== id);
+        populateInmuebleSelect();
+        renderCatalogo();
+        await deleteInmueble(id);
+        showToast("Inmueble eliminado del catálogo.", "success");
+      }
+
+      // ── CSV import ──
+      $("#importCsvBtn").addEventListener("click", () => $("#csvFileInput").click());
+      $("#csvFileInput").addEventListener("change", async function() {
+        const file = this.files[0];
+        if (!file) return;
+        const text = await file.text();
+        importCSV(text);
+        this.value = "";
+      });
+
+      function importCSV(text) {
+        const lines = text.trim().split(/\r?\n/);
+        if (lines.length < 2) { showToast("El CSV está vacío.", "danger"); return; }
+
+        // detect separator
+        const sep = lines[0].includes(";") ? ";" : ",";
+
+        // parse headers (normalizar)
+        const headers = lines[0].split(sep).map(h => h.replace(/^"|"$/g,"").trim().toLowerCase()
+          .normalize("NFD").replace(/[\u0300-\u036f]/g,""));
+
+        const colMap = {
+          codigo: ["codigo", "code", "ref", "referencia", "id"],
+          tipo: ["tipo", "type", "tipologia", "categoria"],
+          operacion: ["operacion", "operación", "modalidad", "tipo operacion"],
+          propietario: ["propietario", "owner", "contacto", "propietario / contacto"],
+          direccion: ["direccion", "dirección", "address", "ubicacion", "ubicación"],
+          notas: ["notas", "notes", "observaciones", "comentarios"],
+        };
+
+        function findCol(key) {
+          for (const alias of colMap[key]) {
+            const idx = headers.findIndex(h => h.includes(alias));
+            if (idx >= 0) return idx;
+          }
+          return -1;
+        }
+
+        const idxCodigo    = findCol("codigo");
+        if (idxCodigo < 0) { showToast("No se encontró columna 'codigo' en el CSV.", "danger"); return; }
+        const idxTipo      = findCol("tipo");
+        const idxOp        = findCol("operacion");
+        const idxProp      = findCol("propietario");
+        const idxDir       = findCol("direccion");
+        const idxNotas     = findCol("notas");
+
+        const now = new Date().toISOString();
+        let nuevos = 0, actualizados = 0;
+
+        const batch = [];
+        for (let i = 1; i < lines.length; i++) {
+          const row = parseCSVRow(lines[i], sep);
+          if (!row.length) continue;
+          const codigo = (row[idxCodigo]||"").trim().toUpperCase();
+          if (!codigo) continue;
+
+          const tipo     = idxTipo  >= 0 ? normalizeTipo(row[idxTipo]||"")  : "Apartamento";
+          const operacion= idxOp    >= 0 ? normalizeOp(row[idxOp]||"")      : "Venta";
+          const prop     = idxProp  >= 0 ? (row[idxProp]||"").trim()         : "";
+          const dir      = idxDir   >= 0 ? (row[idxDir]||"").trim()          : "";
+          const notas    = idxNotas >= 0 ? (row[idxNotas]||"").trim()        : "";
+
+          const existing = catalogo.find(x => x.codigo === codigo);
+          if (existing) {
+            Object.assign(existing, { tipo, operacion, propietario: prop, direccion: dir, notas, fechaActualizacion: now });
+            batch.push(existing);
+            actualizados++;
+          } else {
+            const inm = { id: uid(), codigo, tipo, operacion, propietario: prop, direccion: dir, notas, fechaRegistro: now, fechaActualizacion: now };
+            catalogo.push(inm);
+            batch.push(inm);
+            nuevos++;
+          }
+        }
+
+        if (batch.length === 0) { showToast("No se importaron registros.", "danger"); return; }
+
+        populateInmuebleSelect();
+        renderCatalogo();
+        showToast(`✓ ${nuevos} nuevos, ${actualizados} actualizados.`, "success");
+
+        // guardar en Firestore en paralelo
+        batch.forEach(inm => saveInmueble(inm));
+      }
+
+      function parseCSVRow(line, sep) {
+        const result = [];
+        let cur = "", inQ = false;
+        for (let i = 0; i < line.length; i++) {
+          const c = line[i];
+          if (c === '"') { inQ = !inQ; continue; }
+          if (c === sep && !inQ) { result.push(cur); cur = ""; continue; }
+          cur += c;
+        }
+        result.push(cur);
+        return result;
+      }
+
+      function normalizeTipo(v) {
+        const tipos = ["Apartamento","Casa","Terreno","Finca","Townhouse","Penthouse","Oficina"];
+        const norm = v.trim();
+        return tipos.find(t => t.toLowerCase() === norm.toLowerCase()) || norm || "Apartamento";
+      }
+      function normalizeOp(v) {
+        const norm = v.trim().toLowerCase();
+        if (norm.includes("alquiler") || norm.includes("rent")) return "Alquiler";
+        return "Venta";
+      }
+
+      // ── catálogo search ──
+      document.addEventListener("input", e => {
+        if (e.target && e.target.id === "catSearch") renderCatalogo();
+      });
+
+      // ────────────────────────────────────────────────
+      //  REVISIONES (lógica original + mejoras)
+      // ────────────────────────────────────────────────
       function renderStats() {
-        const total            = registros.length;
-        const necesitan        = registros.filter(r =>  r.necesitaInspeccion).length;
-        const pendienteContacto= registros.filter(r =>  r.necesitaInspeccion && r.contactoPropietario !== true && r.contactoPropietario !== false).length;
-        const noContactado     = registros.filter(r =>  r.necesitaInspeccion && r.contactoPropietario === false).length;
-        const realizadas       = registros.filter(r =>  r.necesitaInspeccion && r.inspeccionRealizada).length;
-        const requiereReparacion = registros.filter(r => r.necesitaReparaciones === true).length;
+        const total               = registros.length;
+        const catTotal            = catalogo.length;
+        const necesitan           = registros.filter(r =>  r.necesitaInspeccion).length;
+        const noContactado        = registros.filter(r =>  r.necesitaInspeccion && r.contactoPropietario === false).length;
+        const pendienteContacto   = registros.filter(r =>  r.necesitaInspeccion && r.contactoPropietario !== true && r.contactoPropietario !== false).length;
+        const realizadas          = registros.filter(r =>  r.necesitaInspeccion && r.inspeccionRealizada).length;
+        const requiereReparacion  = registros.filter(r =>  r.necesitaReparaciones === true).length;
 
         const cards = [
-          { n: total,                            l: "Inmuebles",              cls: "" },
-          { n: necesitan,                        l: "Necesitan inspección",   cls: "" },
-          { n: pendienteContacto + noContactado, l: "Sin contacto efectivo",  cls: "warn" },
-          { n: realizadas,                       l: "Inspecciones realizadas", cls: "ok" },
-          { n: requiereReparacion,               l: "Requieren reparación",   cls: "danger" },
+          { n: catTotal,                          l: "En catálogo",             cls: "" },
+          { n: total,                             l: "Revisiones",              cls: "" },
+          { n: pendienteContacto + noContactado,  l: "Sin contacto efectivo",   cls: "warn" },
+          { n: realizadas,                        l: "Inspeccionados",          cls: "ok" },
+          { n: requiereReparacion,                l: "Requieren reparación",    cls: "danger" },
         ];
         statsRow.innerHTML = cards.map(c => `
           <div class="stat-card ${c.cls}">
@@ -239,7 +572,6 @@
           </div>`).join("");
       }
 
-      // ── applyFilters ──
       function applyFilters(list) {
         const q        = $("#searchInput").value.trim().toLowerCase();
         const tipo     = $("#filterTipo").value;
@@ -254,19 +586,18 @@
         });
       }
 
-      // ── render tabla ──
       function render() {
         renderStats();
-        const list = applyFilters(registros).sort((a, b) =>
-          (b.fechaActualizacion || "").localeCompare(a.fechaActualizacion || "")
+        const list = applyFilters(registros).sort((a,b) =>
+          (b.fechaActualizacion||"").localeCompare(a.fechaActualizacion||"")
         );
 
         if (registros.length === 0) {
-          tableWrap.innerHTML = `<div class="empty-state"><div class="big">Todavía no hay inmuebles registrados</div><div>Registra el primero para empezar.</div></div>`;
+          tableWrap.innerHTML = `<div class="empty-state"><div class="big">Sin revisiones registradas</div><div>Agrega inmuebles al catálogo y comienza a registrar revisiones.</div></div>`;
           return;
         }
         if (list.length === 0) {
-          tableWrap.innerHTML = `<div class="empty-state"><div class="big">Sin resultados</div><div>Ningún inmueble coincide con los filtros.</div></div>`;
+          tableWrap.innerHTML = `<div class="empty-state"><div class="big">Sin resultados</div><div>Ningún registro coincide con los filtros.</div></div>`;
           return;
         }
 
@@ -275,10 +606,15 @@
           const rep  = reparacionPill(r);
           const fotos = r.fotos || [];
           const fotosCells = fotos.length > 0
-            ? `<div class="photo-strip">${fotos.slice(0, 3).map((d, i) => `<img src="${d}" alt="foto ${i+1}" data-recid="${r.id}" data-fi="${i}" />`).join("")}${fotos.length > 3 ? `<span class="photo-count">+${fotos.length - 3}</span>` : ""}</div>`
+            ? `<div class="photo-strip">${fotos.slice(0,3).map((d,i) => `<img src="${d}" alt="foto ${i+1}" data-recid="${r.id}" data-fi="${i}" />`).join("")}${fotos.length > 3 ? `<span class="photo-count">+${fotos.length-3}</span>` : ""}</div>`
             : `<span class="muted">—</span>`;
+
+          // badge inmueble en catálogo
+          const enCatalogo = catalogo.some(x => x.codigo === r.codigo);
+          const catBadge   = enCatalogo ? `<span class="cat-dot" title="En catálogo">●</span>` : "";
+
           return `<tr>
-            <td data-label="Código"><span class="codigo-cell">${escapeHtml(r.codigo)}</span></td>
+            <td data-label="Código"><span class="codigo-cell">${escapeHtml(r.codigo)}</span>${catBadge}</td>
             <td data-label="Tipo">${r.tipo}</td>
             <td data-label="Operación">${r.operacion}</td>
             <td data-label="Dirección"><span class="muted" style="font-size:12px">${r.direccion ? escapeHtml(r.direccion) : "—"}</span></td>
@@ -297,7 +633,7 @@
         tableWrap.innerHTML = `<table>
           <thead><tr>
             <th>Código</th><th>Tipo</th><th>Operación</th><th>Dirección</th><th>Estado</th>
-            <th>Infraestructura</th><th>Reparación</th><th>Fotos</th><th>Actualizado</th><th>Acciones</th>
+            <th>Infraestructura</th><th>Reparación</th><th>Fotos</th><th>Actualizado</th><th></th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>`;
@@ -322,7 +658,7 @@
       function renderPhotoGrid() {
         const grid = $("#photoGrid");
         if (!grid) return;
-        grid.innerHTML = currentPhotos.map((p, i) => `
+        grid.innerHTML = currentPhotos.map((p,i) => `
           <div class="photo-thumb">
             <img src="${p.dataUrl}" alt="${p.name}" />
             <button class="remove-photo" data-pi="${i}" title="Eliminar foto">✕</button>
@@ -336,31 +672,25 @@
       }
 
       function setupPhotoZone() {
-        const zone      = $("#photoZone");
-        const fileInput = $("#f_fotos");
+        const zone = $("#photoZone"), fileInput = $("#f_fotos");
         if (!zone || !fileInput) return;
         zone.addEventListener("click", () => fileInput.click());
         zone.addEventListener("dragover",  e => { e.preventDefault(); zone.classList.add("dragover"); });
         zone.addEventListener("dragleave", ()  => zone.classList.remove("dragover"));
-        zone.addEventListener("drop", e => {
-          e.preventDefault();
-          zone.classList.remove("dragover");
-          handleFiles(e.dataTransfer.files);
-        });
+        zone.addEventListener("drop", e => { e.preventDefault(); zone.classList.remove("dragover"); handleFiles(e.dataTransfer.files); });
         fileInput.addEventListener("change", () => handleFiles(fileInput.files));
       }
 
       function handleFiles(files) {
         Array.from(files).forEach(file => {
-          if (!file.type.startsWith("image/")) { showToast("Solo se permiten imágenes."); return; }
-          if (file.size > 5 * 1024 * 1024)     { showToast(`"${file.name}" supera 5 MB.`); return; }
+          if (!file.type.startsWith("image/")) { showToast("Solo se permiten imágenes.", "danger"); return; }
+          if (file.size > 5*1024*1024) { showToast(`"${file.name}" supera 5 MB.`, "danger"); return; }
           const reader = new FileReader();
           reader.onload = e => { currentPhotos.push({ dataUrl: e.target.result, name: file.name }); renderPhotoGrid(); };
           reader.readAsDataURL(file);
         });
       }
 
-      // ── map ──
       function updateMap(address) {
         const preview     = $("#mapPreview");
         const placeholder = $("#mapPlaceholder");
@@ -375,24 +705,23 @@
 
       // ── lightbox ──
       function openLightbox(photos, startIndex) {
-        lbPhotos = photos;
-        lbIndex  = startIndex;
+        lbPhotos = photos; lbIndex = startIndex;
         showLbImage();
         $("#lightbox").classList.add("open");
       }
       function showLbImage() {
-        $("#lbImg").src         = lbPhotos[lbIndex].dataUrl;
-        $("#lbCounter").textContent = `${lbIndex + 1} / ${lbPhotos.length}`;
+        $("#lbImg").src = lbPhotos[lbIndex].dataUrl;
+        $("#lbCounter").textContent = `${lbIndex+1} / ${lbPhotos.length}`;
       }
       $("#lbClose").addEventListener("click",  () => $("#lightbox").classList.remove("open"));
       $("#lightbox").addEventListener("click", e  => { if (e.target === $("#lightbox")) $("#lightbox").classList.remove("open"); });
-      $("#lbPrev").addEventListener("click",   () => { lbIndex = (lbIndex - 1 + lbPhotos.length) % lbPhotos.length; showLbImage(); });
-      $("#lbNext").addEventListener("click",   () => { lbIndex = (lbIndex + 1) % lbPhotos.length; showLbImage(); });
+      $("#lbPrev").addEventListener("click",   () => { lbIndex = (lbIndex-1+lbPhotos.length)%lbPhotos.length; showLbImage(); });
+      $("#lbNext").addEventListener("click",   () => { lbIndex = (lbIndex+1)%lbPhotos.length; showLbImage(); });
       document.addEventListener("keydown", e => {
         if (!$("#lightbox").classList.contains("open")) return;
         if (e.key === "Escape")     $("#lightbox").classList.remove("open");
-        if (e.key === "ArrowLeft")  { lbIndex = (lbIndex - 1 + lbPhotos.length) % lbPhotos.length; showLbImage(); }
-        if (e.key === "ArrowRight") { lbIndex = (lbIndex + 1) % lbPhotos.length; showLbImage(); }
+        if (e.key === "ArrowLeft")  { lbIndex = (lbIndex-1+lbPhotos.length)%lbPhotos.length; showLbImage(); }
+        if (e.key === "ArrowRight") { lbIndex = (lbIndex+1)%lbPhotos.length; showLbImage(); }
       });
 
       setupPhotoZone();
@@ -404,7 +733,6 @@
         }
       });
 
-      // ── radio helpers ──
       function setRadio(name, value) {
         form.querySelectorAll(`input[name="${name}"]`).forEach(el => { el.checked = el.value === value; });
       }
@@ -415,12 +743,13 @@
 
       function resetForm() {
         form.reset();
-        $("#f_tipo").value              = "Apartamento";
-        $("#f_operacion").value         = "Venta";
-        $("#f_estadoInfra").value       = "";
+        $("#f_inmueble_sel").value        = "";
+        $("#f_tipo").value                = "Apartamento";
+        $("#f_operacion").value           = "Venta";
+        $("#f_estadoInfra").value         = "";
         $("#f_inspeccionRealizada").value = "no";
-        setRadio("f_necesita",    "");
-        setRadio("f_contacto",    "");
+        setRadio("f_necesita", "");
+        setRadio("f_contacto", "");
         setRadio("f_reparaciones","");
         currentPhotos = [];
         renderPhotoGrid();
@@ -429,8 +758,8 @@
       }
 
       function toggleBloques() {
-        const necesita  = getRadio("f_necesita") === "si";
-        const contacto  = getRadio("f_contacto");
+        const necesita     = getRadio("f_necesita") === "si";
+        const contacto     = getRadio("f_contacto");
         const reparaciones = getRadio("f_reparaciones");
         $("#bloqueInspeccion").style.display     = necesita ? "block" : "none";
         $("#bloqueNoContacto").style.display     = (necesita && contacto === "no") ? "block" : "none";
@@ -439,13 +768,27 @@
       }
 
       form.addEventListener("change", e => {
-        if (["f_necesita", "f_contacto", "f_reparaciones"].includes(e.target.name)) toggleBloques();
+        if (["f_necesita","f_contacto","f_reparaciones"].includes(e.target.name)) toggleBloques();
       });
 
-      function openAdd() {
+      function openAdd(inmId = null) {
         editingId = null;
-        $("#panelTitle").textContent = "Registrar inmueble";
+        $("#panelTitle").textContent = "Registrar revisión";
         resetForm();
+        // Si viene desde el catálogo, preseleccionar
+        if (inmId) {
+          $("#f_inmueble_sel").value = inmId;
+          // trigger change
+          const inm = catalogo.find(x => x.id === inmId);
+          if (inm) {
+            $("#f_codigo").value      = inm.codigo;
+            $("#f_tipo").value        = inm.tipo || "Apartamento";
+            $("#f_operacion").value   = inm.operacion || "Venta";
+            $("#f_propietario").value = inm.propietario || "";
+            $("#f_direccion").value   = inm.direccion || "";
+            if (inm.direccion) updateMap(inm.direccion);
+          }
+        }
         overlay.classList.add("open");
       }
 
@@ -453,11 +796,14 @@
         const r = registros.find(x => x.id === id);
         if (!r) return;
         editingId = id;
-        $("#panelTitle").textContent = "Editar inmueble " + r.codigo;
+        $("#panelTitle").textContent = "Editar revisión · " + r.codigo;
         resetForm();
-        $("#f_codigo").value    = r.codigo;
-        $("#f_tipo").value      = r.tipo;
-        $("#f_operacion").value = r.operacion;
+        // intentar preseleccionar el inmueble en catálogo
+        const inmCat = catalogo.find(x => x.codigo === r.codigo);
+        if (inmCat) $("#f_inmueble_sel").value = inmCat.id;
+        $("#f_codigo").value      = r.codigo;
+        $("#f_tipo").value        = r.tipo;
+        $("#f_operacion").value   = r.operacion;
         $("#f_propietario").value = r.propietario || "";
         setRadio("f_necesita", r.necesitaInspeccion ? "si" : "no");
         if (r.contactoPropietario === true)  setRadio("f_contacto", "si");
@@ -466,14 +812,14 @@
         $("#f_fechaInspeccion").value     = r.fechaInspeccion || "";
         $("#f_inspeccionRealizada").value = r.inspeccionRealizada ? "si" : "no";
         $("#f_estadoInfra").value         = r.estadoInfraestructura || "";
-        if (r.necesitaReparaciones === true)  setRadio("f_reparaciones", "si");
-        else if (r.necesitaReparaciones === false) setRadio("f_reparaciones", "no");
-        else setRadio("f_reparaciones", "");
+        if (r.necesitaReparaciones === true)       setRadio("f_reparaciones","si");
+        else if (r.necesitaReparaciones === false) setRadio("f_reparaciones","no");
+        else                                       setRadio("f_reparaciones","");
         $("#f_descripReparaciones").value = r.descripcionReparaciones || "";
-        $("#f_notas").value    = r.notas || "";
-        $("#f_direccion").value = r.direccion || "";
+        $("#f_notas").value               = r.notas || "";
+        $("#f_direccion").value           = r.direccion || "";
         if (r.direccion) updateMap(r.direccion);
-        currentPhotos = (r.fotos || []).map(d => ({ dataUrl: d, name: "foto" }));
+        currentPhotos = (r.fotos||[]).map(d => ({ dataUrl: d, name: "foto" }));
         renderPhotoGrid();
         toggleBloques();
         overlay.classList.add("open");
@@ -481,20 +827,19 @@
 
       function closePanel() { overlay.classList.remove("open"); }
 
-      $("#addBtn").addEventListener("click", openAdd);
+      $("#addBtn").addEventListener("click", () => openAdd());
       $("#cancelBtn").addEventListener("click", closePanel);
       overlay.addEventListener("click", e => { if (e.target === overlay) closePanel(); });
 
-      // ── submit form ──
       form.addEventListener("submit", async e => {
         e.preventDefault();
         const codigo = $("#f_codigo").value.trim();
-        if (!codigo) { showToast("El código del inmueble es obligatorio."); return; }
+        if (!codigo) { showToast("El código del inmueble es obligatorio.", "danger"); return; }
 
         const dup = registros.find(r => r.codigo.toLowerCase() === codigo.toLowerCase() && r.id !== editingId);
-        if (dup) { showToast("Ya existe un inmueble con ese código."); return; }
+        if (dup) { showToast("Ya existe una revisión con ese código.", "danger"); return; }
 
-        if (getRadio("f_necesita") === "") { showToast("Indica si el inmueble necesita inspección."); return; }
+        if (getRadio("f_necesita") === "") { showToast("Indica si el inmueble necesita inspección.", "danger"); return; }
 
         const necesitaInspeccion = getRadio("f_necesita") === "si";
         let contactoPropietario = null, razonNoContacto = "", fechaInspeccion = "";
@@ -502,13 +847,13 @@
 
         if (necesitaInspeccion) {
           const contactoVal = getRadio("f_contacto");
-          if (contactoVal === "") { showToast("Indica si se contactó al propietario."); return; }
+          if (contactoVal === "") { showToast("Indica si se contactó al propietario.", "danger"); return; }
           contactoPropietario = contactoVal === "si";
           if (!contactoPropietario) {
             razonNoContacto = $("#f_razonNoContacto").value.trim();
-            if (!razonNoContacto) { showToast("Explica por qué no se ha contactado al propietario."); return; }
+            if (!razonNoContacto) { showToast("Explica por qué no se ha contactado al propietario.", "danger"); return; }
           } else {
-            fechaInspeccion    = $("#f_fechaInspeccion").value;
+            fechaInspeccion     = $("#f_fechaInspeccion").value;
             inspeccionRealizada = $("#f_inspeccionRealizada").value === "si";
           }
           estadoInfraestructura = $("#f_estadoInfra").value;
@@ -532,7 +877,7 @@
             notas: $("#f_notas").value.trim(), fechaActualizacion: now,
           });
           record = r;
-          showToast("Inmueble actualizado.");
+          showToast("Revisión actualizada.", "success");
         } else {
           record = {
             id: uid(), codigo, tipo: $("#f_tipo").value, operacion: $("#f_operacion").value,
@@ -544,30 +889,29 @@
             notas: $("#f_notas").value.trim(), fechaRegistro: now, fechaActualizacion: now,
           };
           registros.push(record);
-          showToast("Inmueble registrado.");
+          showToast("Revisión registrada.", "success");
         }
 
         closePanel();
         render();
+        renderCatalogo(); // refresh badges de progreso
         await saveRecord(record);
       });
 
-      // ── eliminar ──
       async function deleteRecord(id) {
         const r = registros.find(x => x.id === id);
         if (!r) return;
-        if (!confirm(`¿Eliminar el registro ${r.codigo}? Esta acción no se puede deshacer.`)) return;
+        if (!confirm(`¿Eliminar la revisión ${r.codigo}? Esta acción no se puede deshacer.`)) return;
         registros = registros.filter(x => x.id !== id);
         render();
+        renderCatalogo();
         await deleteFirestore(id);
-        showToast("Registro eliminado.");
+        showToast("Revisión eliminada.", "success");
       }
 
-      // ── filtros ──
-      ["searchInput"].forEach(id => $("#" + id).addEventListener("input", render));
-      ["filterTipo", "filterOperacion", "filterEstado"].forEach(id => $("#" + id).addEventListener("change", render));
+      ["searchInput"].forEach(id => $("#"+id).addEventListener("input", render));
+      ["filterTipo","filterOperacion","filterEstado"].forEach(id => $("#"+id).addEventListener("change", render));
 
-      // ── CSV export ──
       $("#exportBtn").addEventListener("click", () => {
         if (registros.length === 0) { showToast("No hay registros para exportar."); return; }
         const headers = ["Código","Tipo","Operación","Dirección","Propietario","Necesita inspección","Propietario contactado","Razón sin contacto","Fecha inspección","Inspección realizada","Estado infraestructura","Necesita reparaciones","Detalle reparaciones","Notas","Fotos","Fecha registro","Última actualización"];
@@ -580,19 +924,18 @@
           r.estadoInfraestructura||"",
           r.necesitaReparaciones===true?"Sí":r.necesitaReparaciones===false?"No":"",
           r.descripcionReparaciones||"", r.notas||"",
-          (r.fotos||[]).length+" fotos",
-          r.fechaRegistro||"", r.fechaActualizacion||""
+          (r.fotos||[]).length+" fotos", r.fechaRegistro||"", r.fechaActualizacion||""
         ]);
-        const csv = [headers, ...rows].map(row => row.map(v => `"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
-        const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+        const csv = [headers,...rows].map(row => row.map(v => `"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+        const blob = new Blob(["\uFEFF"+csv], { type:"text/csv;charset=utf-8;" });
         const url = URL.createObjectURL(blob);
-        const a   = document.createElement("a");
-        a.href = url; a.download = "registro_inmuebles.csv";
+        const a = document.createElement("a");
+        a.href=url; a.download="revisiones_inmuebles.csv";
         document.body.appendChild(a); a.click();
         document.body.removeChild(a); URL.revokeObjectURL(url);
       });
 
-      load();
+      loadAll();
     }
   </script>
 
@@ -608,45 +951,30 @@
     body{ font-family:'Inter',system-ui,sans-serif; color:var(--ink); background:var(--paper); margin:0; }
 
     /* ── LOGIN ── */
-    #screenLogin{
-      display:flex; align-items:center; justify-content:center;
-      min-height:100vh; background:var(--paper);
-    }
-    .login-card{
-      background:var(--card); border:1px solid var(--line);
-      border-radius:14px; padding:36px 32px; width:100%; max-width:380px;
-      box-shadow:0 4px 24px rgba(0,0,0,.08);
-    }
-    .login-card h1{
-      font-family:'Space Grotesk',sans-serif; font-size:22px;
-      color:var(--brand); margin:0 0 6px 0;
-    }
+    #screenLogin{ display:flex; align-items:center; justify-content:center; min-height:100vh; background:var(--paper); }
+    .login-card{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:36px 32px; width:100%; max-width:380px; box-shadow:0 4px 24px rgba(0,0,0,.08); }
+    .login-card h1{ font-family:'Space Grotesk',sans-serif; font-size:22px; font-weight:700; color:var(--brand); margin:0 0 6px 0; }
     .login-card p{ color:var(--ink-soft); font-size:13.5px; margin:0 0 24px 0; }
     .login-field{ margin-bottom:14px; }
     .login-field label{ display:block; font-size:12px; font-weight:600; color:var(--ink-soft); margin-bottom:5px; }
-    .login-field input{
-      width:100%; padding:9px 11px; border:1px solid var(--line);
-      border-radius:7px; font-family:'Inter',sans-serif; font-size:14px;
-      color:var(--ink); background:#fff;
-    }
+    .login-field input{ width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:7px; font-family:'Inter',sans-serif; font-size:14px; color:var(--ink); background:#fff; }
     .login-field input:focus{ outline:2px solid var(--brand-2); }
     .login-error{ color:var(--terra); font-size:12.5px; margin-bottom:10px; min-height:18px; }
     .login-links{ font-size:12.5px; color:var(--ink-soft); margin-top:14px; text-align:center; }
     .login-links a{ color:var(--brand-2); font-weight:600; cursor:pointer; text-decoration:none; }
 
-    /* ── APP HEADER ── */
-    .app-topbar{
-      display:flex; align-items:center; gap:12px; justify-content:flex-end;
-      padding:8px 28px; background:var(--card); border-bottom:1px solid var(--line);
-      font-size:13px; color:var(--ink-soft);
-    }
+    /* ── TOPBAR ── */
+    .app-topbar{ display:flex; align-items:center; gap:12px; justify-content:flex-end; padding:8px 28px; background:var(--card); border-bottom:1px solid var(--line); font-size:13px; color:var(--ink-soft); position:sticky; top:0; z-index:30; }
     .app-topbar strong{ color:var(--ink); }
 
+    /* ── TABS ── */
+    .tabs-bar{ display:flex; gap:0; border-bottom:1px solid var(--line); background:var(--card); padding:0 28px; }
+    .tab-btn{ font-family:'Inter',sans-serif; font-size:13.5px; font-weight:600; background:none; border:none; border-bottom:2px solid transparent; padding:12px 18px; cursor:pointer; color:var(--ink-soft); transition:color .15s, border-color .15s; margin-bottom:-1px; }
+    .tab-btn.active{ color:var(--brand); border-bottom-color:var(--brand); }
+    .tab-btn:hover:not(.active){ color:var(--ink); }
+
     /* ── MAIN ── */
-    .registro-root{
-      font-family:'Inter',system-ui,sans-serif; color:var(--ink); background:var(--paper);
-      min-height:calc(100vh - 44px); padding:28px 28px 60px; max-width:1280px; margin:0 auto;
-    }
+    .registro-root{ font-family:'Inter',system-ui,sans-serif; color:var(--ink); background:var(--paper); min-height:calc(100vh - 88px); padding:28px 28px 60px; max-width:1340px; margin:0 auto; }
     .header-row{ display:flex; justify-content:space-between; align-items:flex-start; gap:24px; flex-wrap:wrap; margin-bottom:22px; }
     .title-block h1{ font-family:'Space Grotesk',sans-serif; font-size:26px; font-weight:700; margin:0 0 4px 0; color:var(--brand); letter-spacing:-.01em; }
     .title-block p{ margin:0; color:var(--ink-soft); font-size:13.5px; max-width:520px; }
@@ -662,6 +990,7 @@
     .stat-card.warn .stat-num{ color:var(--amber); }
     .stat-card.danger .stat-num{ color:var(--terra); }
     .stat-card.ok .stat-num{ color:var(--green); }
+    .stat-card.info-stat .stat-num{ color:var(--info); }
 
     .toolbar{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:16px; padding-bottom:16px; border-bottom:1px solid var(--line); }
     .toolbar input[type="text"],.toolbar select{ font-family:'Inter',sans-serif; font-size:13.5px; padding:8px 10px; border:1px solid var(--line); border-radius:7px; background:var(--card); color:var(--ink); }
@@ -673,15 +1002,16 @@
     .btn-primary:hover{ background:var(--brand-2); }
     .btn-ghost{ background:transparent; border-color:var(--line); color:var(--ink); }
     .btn-ghost:hover{ background:var(--paper-2); }
-    .btn-text{ background:none; border:none; color:var(--brand-2); font-weight:600; padding:4px 6px; cursor:pointer; font-size:13px; }
+    .btn-text{ background:none; border:none; color:var(--brand-2); font-weight:600; padding:4px 6px; cursor:pointer; font-size:12.5px; }
     .btn-text.danger{ color:var(--terra); }
 
     table{ width:100%; border-collapse:collapse; }
     thead th{ text-align:left; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); font-weight:600; padding:0 12px 8px; border-bottom:1px solid var(--line); }
     tbody tr{ border-bottom:1px solid var(--line); }
     tbody tr:hover{ background:rgba(255,255,255,.6); }
-    tbody td{ padding:11px 12px; font-size:13.5px; vertical-align:top; }
+    tbody td{ padding:10px 12px; font-size:13.5px; vertical-align:middle; }
     .codigo-cell{ font-family:'JetBrains Mono',monospace; font-weight:600; color:var(--brand); }
+    .cat-dot{ color:var(--green); font-size:10px; margin-left:5px; vertical-align:middle; }
     .muted{ color:var(--ink-soft); font-size:12.5px; }
 
     .pill{ display:inline-block; font-size:11.5px; font-weight:600; padding:3px 9px; border-radius:100px; white-space:nowrap; }
@@ -694,9 +1024,10 @@
     .empty-state{ text-align:center; padding:60px 20px; color:var(--ink-soft); }
     .empty-state .big{ font-family:'Space Grotesk',sans-serif; font-size:17px; color:var(--ink); margin-bottom:6px; }
 
+    /* ── PANEL LATERAL ── */
     .overlay{ position:fixed; inset:0; background:rgba(27,42,47,.42); display:none; align-items:flex-start; justify-content:flex-end; z-index:50; }
     .overlay.open{ display:flex; }
-    .panel{ width:420px; max-width:92vw; height:100%; background:var(--paper); box-shadow:-12px 0 30px rgba(0,0,0,.18); overflow-y:auto; padding:24px 22px 40px; }
+    .panel{ width:440px; max-width:92vw; height:100%; background:var(--paper); box-shadow:-12px 0 30px rgba(0,0,0,.18); overflow-y:auto; padding:24px 22px 40px; }
     .panel h2{ font-family:'Space Grotesk',sans-serif; font-size:19px; color:var(--brand); margin:0 0 18px 0; }
     .field{ margin-bottom:15px; }
     .field label{ display:block; font-size:12px; font-weight:600; color:var(--ink-soft); margin-bottom:5px; }
@@ -709,6 +1040,15 @@
     .req::after{ content:" *"; color:var(--terra); }
     .hint{ font-size:11.5px; color:var(--ink-soft); margin-top:4px; }
 
+    /* separador en panel */
+    .panel-section-label{ font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--brand-2); font-weight:600; margin:18px 0 12px; padding-bottom:6px; border-bottom:1px dashed var(--line); }
+
+    /* select inmueble destacado */
+    .inmueble-sel-wrap{ background:var(--info-bg); border:1px solid var(--info); border-radius:8px; padding:10px 12px; margin-bottom:14px; }
+    .inmueble-sel-wrap label{ color:var(--info) !important; font-size:12px; font-weight:700; }
+    .inmueble-sel-wrap select{ border-color:var(--info); background:var(--card); }
+
+    /* fotos */
     .photo-upload-zone{ border:2px dashed var(--line); border-radius:var(--radius); padding:16px 12px; text-align:center; cursor:pointer; transition:border-color .15s,background .15s; background:#fff; }
     .photo-upload-zone:hover,.photo-upload-zone.dragover{ border-color:var(--brand-2); background:var(--paper-2); }
     .photo-upload-zone input[type="file"]{ display:none; }
@@ -727,6 +1067,7 @@
     .photo-strip img:hover{ opacity:.8; }
     .photo-count{ font-size:11px; color:var(--ink-soft); align-self:center; white-space:nowrap; }
 
+    /* Lightbox */
     .lightbox{ position:fixed; inset:0; background:rgba(0,0,0,.82); display:none; align-items:center; justify-content:center; z-index:200; padding:20px; }
     .lightbox.open{ display:flex; }
     .lightbox img{ max-width:90vw; max-height:88vh; border-radius:8px; object-fit:contain; box-shadow:0 8px 40px rgba(0,0,0,.6); }
@@ -735,26 +1076,35 @@
     .lightbox-nav.prev{ left:16px; } .lightbox-nav.next{ right:16px; }
     .lightbox-counter{ position:fixed; bottom:20px; left:50%; transform:translateX(-50%); color:rgba(255,255,255,.7); font-size:13px; }
 
+    /* Toast */
     .toast{ position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:var(--ink); color:#fff; font-size:13px; font-weight:500; padding:9px 16px; border-radius:7px; z-index:80; opacity:0; transition:opacity .25s ease; }
     .toast.show{ opacity:1; }
+    .toast.success{ background:var(--green); }
+    .toast.danger{ background:var(--terra); }
     .loading-row{ text-align:center; padding:40px; color:var(--ink-soft); }
 
+    /* CSV import button */
+    .btn-csv{ background:transparent; border:1px dashed var(--brand-2); color:var(--brand-2); font-size:12.5px; padding:7px 13px; border-radius:7px; cursor:pointer; font-weight:600; font-family:'Inter',sans-serif; }
+    .btn-csv:hover{ background:var(--green-bg); }
+
     @media (max-width:760px){
+      .registro-root{ padding:16px 12px 60px; }
       table thead{ display:none; }
       tbody tr{ display:block; padding:10px 0; }
       tbody td{ display:flex; justify-content:space-between; gap:10px; padding:5px 4px; }
       tbody td::before{ content:attr(data-label); font-weight:600; color:var(--ink-soft); font-size:11px; }
+      .tabs-bar{ padding:0 12px; }
+      .tab-btn{ padding:10px 12px; font-size:13px; }
     }
   </style>
 </head>
 <body>
 
-<!-- ════════════════ PANTALLA LOGIN ════════════════ -->
+<!-- ════════ LOGIN ════════ -->
 <div id="screenLogin" style="display:flex">
   <div class="login-card">
     <h1 id="loginTitle">Iniciar sesión</h1>
     <p>Sistema de registro de inspección de inmuebles</p>
-
     <div class="login-field">
       <label>Correo electrónico</label>
       <input type="email" id="loginEmail" placeholder="usuario@correo.com" autocomplete="email" required />
@@ -766,20 +1116,17 @@
         <button type="button" id="togglePassword" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:16px;line-height:1;padding:0;color:var(--ink-soft)">👁️</button>
       </div>
     </div>
-
     <div class="login-error" id="loginError"></div>
-
     <form id="loginForm" style="display:contents">
       <button type="submit" id="loginSubmit" class="btn btn-primary" style="width:100%">Entrar</button>
     </form>
-
     <div class="login-links">
       <a id="forgotPassword" href="#">¿Olvidaste tu contraseña?</a>
     </div>
   </div>
 </div>
 
-<!-- ════════════════ APP PRINCIPAL ════════════════ -->
+<!-- ════════ APP ════════ -->
 <div id="screenApp" style="display:none">
 
   <div class="app-topbar">
@@ -787,50 +1134,108 @@
     <button class="btn btn-ghost" id="logoutBtn" style="padding:5px 12px;font-size:12.5px">Cerrar sesión</button>
   </div>
 
-  <div class="registro-root" id="root">
-    <div class="header-row">
-      <div class="title-block">
-        <span class="eyebrow">Post-sismo · Control de inmuebles</span>
-        <h1>Registro de inspección de inmuebles</h1>
-        <p>Seguimiento de contacto con propietarios, fechas de inspección y estado estructural.</p>
+  <!-- Tabs -->
+  <div class="tabs-bar">
+    <button class="tab-btn active" data-tab="revisiones">📋 Revisiones</button>
+    <button class="tab-btn" data-tab="catalogo">🏘️ Catálogo de inmuebles</button>
+  </div>
+
+  <!-- ════ VISTA REVISIONES ════ -->
+  <div id="viewRevisiones">
+    <div class="registro-root">
+      <div class="header-row">
+        <div class="title-block">
+          <span class="eyebrow">Post-sismo · Control de inmuebles</span>
+          <h1>Revisiones de inspección</h1>
+          <p>Seguimiento de contacto con propietarios, fechas de inspección y estado estructural.</p>
+        </div>
+        <div class="stats-row" id="statsRow"></div>
       </div>
-      <div class="stats-row" id="statsRow"></div>
-    </div>
 
-    <div class="toolbar">
-      <input type="text" id="searchInput" placeholder="Buscar por código…" />
-      <select id="filterTipo">
-        <option value="">Todos los tipos</option>
-        <option>Apartamento</option><option>Casa</option><option>Terreno</option>
-        <option>Finca</option><option>Townhouse</option><option>Penthouse</option><option>Oficina</option>
-      </select>
-      <select id="filterOperacion">
-        <option value="">Venta y alquiler</option>
-        <option>Venta</option><option>Alquiler</option>
-      </select>
-      <select id="filterEstado">
-        <option value="">Todos los estados</option>
-        <option value="no_requiere">No requiere inspección</option>
-        <option value="pendiente_contacto">Pendiente de contacto</option>
-        <option value="no_contactado">Propietario no contactado</option>
-        <option value="programada">Inspección programada</option>
-        <option value="realizada">Inspección realizada</option>
-      </select>
-      <div class="spacer"></div>
-      <button class="btn btn-ghost" id="exportBtn">Exportar CSV</button>
-      <button class="btn btn-primary" id="addBtn">+ Registrar inmueble</button>
-    </div>
+      <div class="toolbar">
+        <input type="text" id="searchInput" placeholder="Buscar por código…" />
+        <select id="filterTipo">
+          <option value="">Todos los tipos</option>
+          <option>Apartamento</option><option>Casa</option><option>Terreno</option>
+          <option>Finca</option><option>Townhouse</option><option>Penthouse</option><option>Oficina</option>
+        </select>
+        <select id="filterOperacion">
+          <option value="">Venta y alquiler</option><option>Venta</option><option>Alquiler</option>
+        </select>
+        <select id="filterEstado">
+          <option value="">Todos los estados</option>
+          <option value="no_requiere">No requiere inspección</option>
+          <option value="pendiente_contacto">Pendiente de contacto</option>
+          <option value="no_contactado">Propietario no contactado</option>
+          <option value="programada">Inspección programada</option>
+          <option value="realizada">Inspección realizada</option>
+        </select>
+        <div class="spacer"></div>
+        <button class="btn btn-ghost" id="exportBtn">Exportar CSV</button>
+        <button class="btn btn-primary" id="addBtn">+ Nueva revisión</button>
+      </div>
 
-    <div id="tableWrap">
-      <div class="loading-row">Cargando registros…</div>
+      <div id="tableWrap">
+        <div class="loading-row">Cargando registros…</div>
+      </div>
     </div>
   </div>
 
-  <!-- Panel lateral -->
+  <!-- ════ VISTA CATÁLOGO ════ -->
+  <div id="viewCatalogo" style="display:none">
+    <div class="registro-root">
+      <div class="header-row">
+        <div class="title-block">
+          <span class="eyebrow">Inventario · Base de datos</span>
+          <h1>Catálogo de inmuebles</h1>
+          <p>Carga aquí los inmuebles de tu otro sistema. Al agregar una revisión puedes seleccionarlos directamente.</p>
+        </div>
+        <div class="stats-row" id="catStatsRow"></div>
+      </div>
+
+      <div class="toolbar">
+        <input type="text" id="catSearch" placeholder="Buscar por código o dirección…" />
+        <div class="spacer"></div>
+        <button class="btn-csv" id="importCsvBtn">⬆ Importar CSV</button>
+        <input type="file" id="csvFileInput" accept=".csv,.txt" style="display:none" />
+        <button class="btn btn-primary" id="addInmBtn">+ Agregar inmueble</button>
+      </div>
+
+      <!-- Ayuda CSV -->
+      <details style="margin-bottom:16px;background:var(--info-bg);border:1px solid var(--info);border-radius:8px;padding:10px 14px;">
+        <summary style="cursor:pointer;font-size:12.5px;font-weight:600;color:var(--info)">¿Cómo importar desde CSV?</summary>
+        <div style="font-size:12px;color:var(--ink-soft);margin-top:8px;line-height:1.6;">
+          Tu CSV debe tener una fila de encabezados. Columnas reconocidas: <code>codigo</code>, <code>tipo</code>, <code>operacion</code>, <code>propietario</code>, <code>direccion</code>, <code>notas</code>.
+          El separador puede ser coma (,) o punto y coma (;). Si un código ya existe, se actualizará. Los registros sin código se omiten.<br>
+          <strong>Ejemplo de fila:</strong> <code>INM-001,Apartamento,Venta,Juan Pérez,Av. Principal Caracas,Piso 3</code>
+        </div>
+      </details>
+
+      <div id="catalogoWrap">
+        <div class="loading-row">Cargando catálogo…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Panel revisión -->
   <div class="overlay" id="overlay">
     <div class="panel">
-      <h2 id="panelTitle">Registrar inmueble</h2>
+      <h2 id="panelTitle">Registrar revisión</h2>
       <form id="propForm">
+
+        <!-- Selector inmueble catálogo -->
+        <div class="inmueble-sel-wrap">
+          <div class="field" style="margin-bottom:0">
+            <label>Seleccionar del catálogo</label>
+            <select id="f_inmueble_sel">
+              <option value="">— Elegir inmueble cargado —</option>
+            </select>
+          </div>
+          <div class="hint" style="color:var(--info)">Al elegir, los campos se pre-rellenan automáticamente.</div>
+        </div>
+
+        <div class="panel-section-label">Datos del inmueble</div>
+
         <div class="field"><label class="req">Código del inmueble</label><input type="text" id="f_codigo" placeholder="INM-0001" /></div>
         <div class="field"><label class="req">Tipo de inmueble</label>
           <select id="f_tipo"><option>Apartamento</option><option>Casa</option><option>Terreno</option><option>Finca</option><option>Townhouse</option><option>Penthouse</option><option>Oficina</option></select>
@@ -838,13 +1243,12 @@
         <div class="field"><label class="req">Operación</label>
           <select id="f_operacion"><option>Venta</option><option>Alquiler</option></select>
         </div>
-        <div class="field"><label>Propietario / contacto (opcional)</label><input type="text" id="f_propietario" placeholder="Nombre y teléfono" /></div>
+        <div class="field"><label>Propietario / contacto</label><input type="text" id="f_propietario" placeholder="Nombre y teléfono" /></div>
         <div class="field">
           <label>Dirección / Ubicación</label>
           <input type="text" id="f_direccion" placeholder="Ej: Av. Principal, Urb. Las Mercedes, Caracas" />
           <div class="map-placeholder" id="mapPlaceholder"><span>📍</span><span>Escribe la dirección para ver el mapa</span></div>
           <div class="map-preview" id="mapPreview"><iframe id="mapIframe" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe></div>
-          <div class="hint">La ubicación se guardará junto al registro.</div>
         </div>
         <div class="field">
           <label>Fotos de los daños</label>
@@ -855,6 +1259,9 @@
           </div>
           <div class="photo-grid" id="photoGrid"></div>
         </div>
+
+        <div class="panel-section-label">Inspección</div>
+
         <div class="field"><label class="req">¿Necesita inspección?</label>
           <div class="radio-row">
             <label><input type="radio" name="f_necesita" value="si"> Sí</label>
@@ -888,7 +1295,7 @@
             <div class="radio-row">
               <label><input type="radio" name="f_reparaciones" value="si"> Sí</label>
               <label><input type="radio" name="f_reparaciones" value="no"> No</label>
-              <label><input type="radio" name="f_reparaciones" value="" checked> Aún no se sabe</label>
+              <label><input type="radio" name="f_reparaciones" value="" checked> Por determinar</label>
             </div>
           </div>
           <div class="subblock" id="bloqueDescripReparacion" style="display:none">
@@ -897,8 +1304,31 @@
         </div>
         <div class="field"><label>Notas adicionales</label><textarea id="f_notas" placeholder="Cualquier otra observación…"></textarea></div>
         <div class="panel-actions">
-          <button type="submit" class="btn btn-primary">Guardar</button>
+          <button type="submit" class="btn btn-primary">Guardar revisión</button>
           <button type="button" class="btn btn-ghost" id="cancelBtn">Cancelar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Panel catálogo inmueble -->
+  <div class="overlay" id="overlayInm">
+    <div class="panel">
+      <h2 id="inmPanelTitle">Agregar al catálogo</h2>
+      <form id="inmForm">
+        <div class="field"><label class="req">Código del inmueble</label><input type="text" id="inm_codigo" placeholder="INM-0001" /></div>
+        <div class="field"><label class="req">Tipo</label>
+          <select id="inm_tipo"><option>Apartamento</option><option>Casa</option><option>Terreno</option><option>Finca</option><option>Townhouse</option><option>Penthouse</option><option>Oficina</option></select>
+        </div>
+        <div class="field"><label>Operación</label>
+          <select id="inm_operacion"><option>Venta</option><option>Alquiler</option></select>
+        </div>
+        <div class="field"><label>Propietario / contacto</label><input type="text" id="inm_propietario" placeholder="Nombre y teléfono" /></div>
+        <div class="field"><label>Dirección</label><input type="text" id="inm_direccion" placeholder="Ej: Av. Principal, Caracas" /></div>
+        <div class="field"><label>Notas</label><textarea id="inm_notas" placeholder="Observaciones del inmueble…"></textarea></div>
+        <div class="panel-actions">
+          <button type="submit" class="btn btn-primary">Guardar</button>
+          <button type="button" class="btn btn-ghost" id="cancelInmBtn">Cancelar</button>
         </div>
       </form>
     </div>
