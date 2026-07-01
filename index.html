@@ -416,6 +416,7 @@
         $("#inmPanelTitle").textContent = "Agregar inmueble al catálogo";
         formInm.reset();
         updateInmMap("");
+        closeAddrDropdown($("#inm_direccion_dropdown"));
         ovInm.classList.add("open");
       }
 
@@ -811,10 +812,88 @@
         if (e.target && e.target.id === "f_direccion") {
           clearTimeout(mapDebounce);
           mapDebounce = setTimeout(() => updateMap(e.target.value), 800);
+          scheduleAddrSearch(e.target, $("#f_direccion_dropdown"), sel => {
+            $("#f_direccion").value = sel.display_name;
+            closeAddrDropdown($("#f_direccion_dropdown"));
+            clearTimeout(mapDebounce);
+            updateMap(sel.display_name);
+          });
         }
         if (e.target && e.target.id === "inm_direccion") {
           clearTimeout(mapDebounce);
           mapDebounce = setTimeout(() => updateInmMap(e.target.value), 800);
+          scheduleAddrSearch(e.target, $("#inm_direccion_dropdown"), sel => {
+            $("#inm_direccion").value = sel.display_name;
+            closeAddrDropdown($("#inm_direccion_dropdown"));
+            clearTimeout(mapDebounce);
+            updateInmMap(sel.display_name);
+          });
+        }
+      });
+
+      // ── autocompletado de direcciones (OpenStreetMap Nominatim, sin API key) ──
+      let addrDebounce = null;
+      let addrReqId = 0;
+
+      function scheduleAddrSearch(inputEl, dropdownEl, onSelect) {
+        clearTimeout(addrDebounce);
+        const query = inputEl.value.trim();
+        if (query.length < 3) {
+          closeAddrDropdown(dropdownEl);
+          return;
+        }
+        addrDebounce = setTimeout(() => runAddrSearch(query, dropdownEl, onSelect), 400);
+      }
+
+      async function runAddrSearch(query, dropdownEl, onSelect) {
+        const myReq = ++addrReqId;
+        try {
+          const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=6&q=${encodeURIComponent(query)}`;
+          const res = await fetch(url, { headers: { "Accept-Language": "es" } });
+          if (myReq !== addrReqId) return; // llegó una búsqueda más nueva, descartar
+          if (!res.ok) { closeAddrDropdown(dropdownEl); return; }
+          const results = await res.json();
+          if (myReq !== addrReqId) return;
+          renderAddrDropdown(dropdownEl, results, onSelect);
+        } catch (err) {
+          if (myReq === addrReqId) closeAddrDropdown(dropdownEl);
+        }
+      }
+
+      function renderAddrDropdown(dropdownEl, results, onSelect) {
+        if (!results || !results.length) {
+          dropdownEl.innerHTML = `<div class="inm-dd-empty">Sin coincidencias</div>`;
+          dropdownEl.style.display = "block";
+          return;
+        }
+        dropdownEl.innerHTML = results.map((r, i) => {
+          const parts = r.display_name.split(",");
+          const main  = parts[0];
+          const rest  = parts.slice(1).join(",").trim();
+          return `
+            <div class="inm-dd-item addr-dd-item" data-idx="${i}">
+              <span class="inm-dd-code">📍 ${escapeHtml(main)}</span>
+              <span class="inm-dd-sub">${escapeHtml(rest)}</span>
+            </div>`;
+        }).join("");
+        dropdownEl.style.display = "block";
+        dropdownEl.querySelectorAll(".addr-dd-item").forEach(el => {
+          el.addEventListener("click", () => onSelect(results[+el.dataset.idx]));
+        });
+      }
+
+      function closeAddrDropdown(dropdownEl) {
+        if (dropdownEl) { dropdownEl.style.display = "none"; dropdownEl.innerHTML = ""; }
+      }
+
+      document.addEventListener("click", e => {
+        const fDrop = $("#f_direccion_dropdown");
+        if (fDrop && !e.target.closest("#f_direccion") && !e.target.closest("#f_direccion_dropdown")) {
+          closeAddrDropdown(fDrop);
+        }
+        const iDrop = $("#inm_direccion_dropdown");
+        if (iDrop && !e.target.closest("#inm_direccion") && !e.target.closest("#inm_direccion_dropdown")) {
+          closeAddrDropdown(iDrop);
         }
       });
 
@@ -832,6 +911,7 @@
         $("#f_inmueble_search").value     = "";
         $("#f_inmueble_selected_badge").style.display = "none";
         closeInmDropdown();
+        closeAddrDropdown($("#f_direccion_dropdown"));
         $("#f_tipo").value                = "Apartamento";
         $("#f_operacion").value           = "Venta";
         $("#f_estadoInfra").value         = "";
@@ -1349,7 +1429,10 @@
         <div class="field"><label>Propietario / contacto</label><input type="text" id="f_propietario" placeholder="Nombre y teléfono" autocomplete="off" /></div>
         <div class="field">
           <label>Dirección / Ubicación</label>
-          <input type="text" id="f_direccion" placeholder="Ej: Av. Principal, Urb. Las Mercedes, Caracas" autocomplete="off" />
+          <div style="position:relative">
+            <input type="text" id="f_direccion" placeholder="Ej: Av. Principal, Urb. Las Mercedes, Caracas" autocomplete="off" />
+            <div id="f_direccion_dropdown" class="inm-dropdown" style="display:none"></div>
+          </div>
           <div class="map-placeholder" id="mapPlaceholder"><span>📍</span><span>Escribe la dirección para ver el mapa</span></div>
           <div class="map-preview" id="mapPreview"><iframe id="mapIframe" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe></div>
         </div>
@@ -1429,7 +1512,10 @@
         <div class="field"><label>Propietario / contacto</label><input type="text" id="inm_propietario" placeholder="Nombre y teléfono" autocomplete="off" /></div>
         <div class="field">
           <label>Dirección</label>
-          <input type="text" id="inm_direccion" placeholder="Ej: Av. Principal, Caracas" autocomplete="off" />
+          <div style="position:relative">
+            <input type="text" id="inm_direccion" placeholder="Ej: Av. Principal, Caracas" autocomplete="off" />
+            <div id="inm_direccion_dropdown" class="inm-dropdown" style="display:none"></div>
+          </div>
           <div class="map-placeholder" id="inmMapPlaceholder"><span>📍</span><span>Escribe la dirección para ver el mapa</span></div>
           <div class="map-preview" id="inmMapPreview"><iframe id="inmMapIframe" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe></div>
         </div>
