@@ -839,14 +839,20 @@
         const necesita     = getRadio("f_necesita") === "si";
         const contacto     = getRadio("f_contacto");
         const reparaciones = getRadio("f_reparaciones");
+        const inspRealizada = $("#f_inspeccionRealizada").value === "si";
+        const estadoInfra   = $("#f_estadoInfra").value;
+        const presentaDanos = estadoInfra !== "" && estadoInfra !== "Sin daños visibles";
         $("#bloqueInspeccion").style.display     = necesita ? "block" : "none";
         $("#bloqueNoContacto").style.display     = (necesita && contacto === "no") ? "block" : "none";
         $("#bloqueSiContacto").style.display     = (necesita && contacto === "si") ? "block" : "none";
         $("#bloqueDescripReparacion").style.display = (necesita && reparaciones === "si") ? "block" : "none";
+        // Las fotos de daños solo aplican si se hizo la inspección y hay daños
+        $("#bloqueFotos").style.display = (necesita && contacto === "si" && inspRealizada && presentaDanos) ? "block" : "none";
       }
 
       form.addEventListener("change", e => {
-        if (["f_necesita","f_contacto","f_reparaciones"].includes(e.target.name)) toggleBloques();
+        const key = e.target.name || e.target.id;
+        if (["f_necesita","f_contacto","f_reparaciones","f_inspeccionRealizada","f_estadoInfra"].includes(key)) toggleBloques();
       });
 
       function openAdd(inmId = null) {
@@ -1337,16 +1343,6 @@
           <div class="map-placeholder" id="mapPlaceholder"><span>📍</span><span>Escribe la dirección para ver el mapa</span></div>
           <div class="map-preview" id="mapPreview"><iframe id="mapIframe" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe></div>
         </div>
-        <div class="field">
-          <label>Fotos de los daños</label>
-          <div class="photo-upload-zone" id="photoZone">
-            <input type="file" id="f_fotos" accept="image/*" multiple />
-            <div class="upload-icon">📷</div>
-            <div class="upload-label"><strong>Haz clic o arrastra</strong> las fotos aquí<br>JPG, PNG, WEBP — máx. 5 MB c/u</div>
-          </div>
-          <div class="photo-grid" id="photoGrid"></div>
-        </div>
-
         <div class="panel-section-label">Inspección</div>
 
         <div class="field"><label class="req">¿Necesita inspección?</label>
@@ -1377,6 +1373,15 @@
               <option>Sin daños visibles</option><option>Daños leves</option>
               <option>Daños moderados</option><option>Daños severos</option><option>Colapso / inhabitable</option>
             </select>
+          </div>
+          <div class="field subblock" id="bloqueFotos" style="display:none">
+            <label>Fotos de los daños</label>
+            <div class="photo-upload-zone" id="photoZone">
+              <input type="file" id="f_fotos" accept="image/*" multiple />
+              <div class="upload-icon">📷</div>
+              <div class="upload-label"><strong>Haz clic o arrastra</strong> las fotos aquí<br>JPG, PNG, WEBP — máx. 5 MB c/u</div>
+            </div>
+            <div class="photo-grid" id="photoGrid"></div>
           </div>
           <div class="field"><label>¿Necesita reparaciones?</label>
             <div class="radio-row">
