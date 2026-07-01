@@ -319,6 +319,17 @@
         return String(s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
       }
 
+      // ── estado de inspección de un inmueble del catálogo ──
+      // sin_revision: nunca se le creó una revisión · en_proceso: tiene revisión(es) pero ninguna inspeccionada · inspeccionado: al menos una revisión con inspección realizada
+      function catEstado(inm) {
+        const recs = registros.filter(r => r.codigo === inm.codigo);
+        if (recs.some(r => r.inspeccionRealizada)) return "inspeccionado";
+        if (recs.length > 0) return "en_proceso";
+        return "sin_revision";
+      }
+
+      let catEstadoFilter = "";
+
       // ────────────────────────────────────────────────
       //  CATÁLOGO DE INMUEBLES
       // ────────────────────────────────────────────────
@@ -328,19 +339,24 @@
 
         // stats del catálogo
         const total     = catalogo.length;
-        const revisados = catalogo.filter(inm => registros.some(r => r.codigo === inm.codigo && r.inspeccionRealizada)).length;
-        const enProceso = catalogo.filter(inm => {
-          const recs = registros.filter(r => r.codigo === inm.codigo);
-          return recs.length > 0 && !recs.some(r => r.inspeccionRealizada);
-        }).length;
-        const sinRevision = total - revisados - enProceso;
+        const revisados = catalogo.filter(inm => catEstado(inm) === "inspeccionado").length;
+        const enProceso = catalogo.filter(inm => catEstado(inm) === "en_proceso").length;
+        const sinRevision = catalogo.filter(inm => catEstado(inm) === "sin_revision").length;
 
         $("#catStatsRow").innerHTML = [
-          { n: total,       l: "En catálogo",       cls: "" },
-          { n: revisados,   l: "Con inspección",    cls: "ok" },
-          { n: enProceso,   l: "En proceso",        cls: "info-stat" },
-          { n: sinRevision, l: "Sin revisión",      cls: "warn" },
-        ].map(c => `<div class="stat-card ${c.cls}"><div class="stat-num">${c.n}</div><div class="stat-label">${c.l}</div></div>`).join("");
+          { n: total,       l: "En catálogo",       cls: "",        filter: "" },
+          { n: revisados,   l: "Con inspección",    cls: "ok",      filter: "inspeccionado" },
+          { n: enProceso,   l: "En proceso",        cls: "info-stat", filter: "en_proceso" },
+          { n: sinRevision, l: "Sin revisión",      cls: "warn",    filter: "sin_revision" },
+        ].map(c => `<div class="stat-card ${c.cls} ${catEstadoFilter===c.filter?'stat-card-active':''}" data-cat-filter="${c.filter}" style="cursor:pointer" title="Clic para filtrar"><div class="stat-num">${c.n}</div><div class="stat-label">${c.l}</div></div>`).join("");
+
+        $("#catStatsRow").querySelectorAll("[data-cat-filter]").forEach(card => {
+          card.addEventListener("click", () => {
+            catEstadoFilter = card.getAttribute("data-cat-filter");
+            $("#catFilterEstado").value = catEstadoFilter;
+            renderCatalogo();
+          });
+        });
 
         if (catalogo.length === 0) {
           wrap.innerHTML = `<div class="empty-state">
@@ -353,7 +369,16 @@
         const q = ($("#catSearch")||{}).value?.trim().toLowerCase() || "";
         const list = catalogo
           .filter(inm => !q || inm.codigo.toLowerCase().includes(q) || (inm.direccion||"").toLowerCase().includes(q))
+          .filter(inm => !catEstadoFilter || catEstado(inm) === catEstadoFilter)
           .sort((a,b) => a.codigo.localeCompare(b.codigo));
+
+        if (list.length === 0) {
+          wrap.innerHTML = `<div class="empty-state">
+            <div class="big">Sin resultados</div>
+            <div>Ningún inmueble coincide con el filtro seleccionado.</div>
+          </div>`;
+          return;
+        }
 
         wrap.innerHTML = `<table>
           <thead><tr>
@@ -1337,6 +1362,7 @@
           <option value="">Todos los tipos</option>
           <option>Apartamento</option><option>Casa</option><option>Terreno</option>
           <option>Finca</option><option>Townhouse</option><option>Penthouse</option><option>Oficina</option>
+          <option>Local</option><option>Anexo</option><option>Habitación</option><option>Galpón</option>
         </select>
         <select id="filterOperacion">
           <option value="">Venta y alquiler</option><option>Venta</option><option>Alquiler</option>
@@ -1374,6 +1400,12 @@
 
       <div class="toolbar">
         <input type="text" id="catSearch" placeholder="Buscar por código o dirección…" autocomplete="off" />
+        <select id="catFilterEstado">
+          <option value="">Todos los estados</option>
+          <option value="sin_revision">Sin revisión</option>
+          <option value="en_proceso">En proceso</option>
+          <option value="inspeccionado">Inspeccionado</option>
+        </select>
         <div class="spacer"></div>
         <button class="btn-csv" id="importCsvBtn">⬆ Importar CSV</button>
         <input type="file" id="csvFileInput" accept=".csv,.txt" style="display:none" />
@@ -1421,7 +1453,7 @@
 
         <div class="field"><label class="req">Código del inmueble</label><input type="text" id="f_codigo" placeholder="INM-0001" autocomplete="off" /></div>
         <div class="field"><label class="req">Tipo de inmueble</label>
-          <select id="f_tipo"><option>Apartamento</option><option>Casa</option><option>Terreno</option><option>Finca</option><option>Townhouse</option><option>Penthouse</option><option>Oficina</option><option>Local</option><option>Anexo</option><option>Habitación</option></select>
+          <select id="f_tipo"><option>Apartamento</option><option>Casa</option><option>Terreno</option><option>Finca</option><option>Townhouse</option><option>Penthouse</option><option>Oficina</option><option>Local</option><option>Anexo</option><option>Habitación</option><option>Galpón</option></select>
         </div>
         <div class="field"><label class="req">Operación</label>
           <select id="f_operacion"><option>Venta</option><option>Alquiler</option></select>
@@ -1503,7 +1535,7 @@
       <form id="inmForm" autocomplete="off">
         <div class="field"><label class="req">Código del inmueble</label><input type="text" id="inm_codigo" placeholder="INM-0001" autocomplete="off" /></div>
         <div class="field"><label class="req">Tipo</label>
-          <select id="inm_tipo"><option>Apartamento</option><option>Casa</option><option>Terreno</option><option>Finca</option><option>Townhouse</option><option>Penthouse</option><option>Oficina</option><option>Local</option><option>Anexo</option><option>Habitación</option></select>
+          <select id="inm_tipo"><option>Apartamento</option><option>Casa</option><option>Terreno</option><option>Finca</option><option>Townhouse</option><option>Penthouse</option><option>Oficina</option><option>Local</option><option>Anexo</option><option>Habitación</option><option>Galpón</option></select>
         </div>
         <div class="field"><label>Operación</label>
           <select id="inm_operacion"><option>Venta</option><option>Alquiler</option></select>
