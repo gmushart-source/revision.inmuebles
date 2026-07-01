@@ -1252,7 +1252,7 @@
       </div>
 
       <div class="toolbar">
-        <input type="text" id="searchInput" placeholder="Buscar por código…" />
+        <input type="text" id="searchInput" placeholder="Buscar por código…" autocomplete="off" />
         <select id="filterTipo">
           <option value="">Todos los tipos</option>
           <option>Apartamento</option><option>Casa</option><option>Terreno</option>
@@ -1293,7 +1293,7 @@
       </div>
 
       <div class="toolbar">
-        <input type="text" id="catSearch" placeholder="Buscar por código o dirección…" />
+        <input type="text" id="catSearch" placeholder="Buscar por código o dirección…" autocomplete="off" />
         <div class="spacer"></div>
         <button class="btn-csv" id="importCsvBtn">⬆ Importar CSV</button>
         <input type="file" id="csvFileInput" accept=".csv,.txt" style="display:none" />
@@ -1320,7 +1320,7 @@
   <div class="overlay" id="overlay">
     <div class="panel">
       <h2 id="panelTitle">Registrar revisión</h2>
-      <form id="propForm">
+      <form id="propForm" autocomplete="off">
 
         <!-- Selector inmueble catálogo con buscador -->
         <div class="inmueble-sel-wrap">
@@ -1339,17 +1339,17 @@
 
         <div class="panel-section-label">Datos del inmueble</div>
 
-        <div class="field"><label class="req">Código del inmueble</label><input type="text" id="f_codigo" placeholder="INM-0001" /></div>
+        <div class="field"><label class="req">Código del inmueble</label><input type="text" id="f_codigo" placeholder="INM-0001" autocomplete="off" /></div>
         <div class="field"><label class="req">Tipo de inmueble</label>
           <select id="f_tipo"><option>Apartamento</option><option>Casa</option><option>Terreno</option><option>Finca</option><option>Townhouse</option><option>Penthouse</option><option>Oficina</option></select>
         </div>
         <div class="field"><label class="req">Operación</label>
           <select id="f_operacion"><option>Venta</option><option>Alquiler</option></select>
         </div>
-        <div class="field"><label>Propietario / contacto</label><input type="text" id="f_propietario" placeholder="Nombre y teléfono" /></div>
+        <div class="field"><label>Propietario / contacto</label><input type="text" id="f_propietario" placeholder="Nombre y teléfono" autocomplete="off" /></div>
         <div class="field">
           <label>Dirección / Ubicación</label>
-          <input type="text" id="f_direccion" placeholder="Ej: Av. Principal, Urb. Las Mercedes, Caracas" />
+          <input type="text" id="f_direccion" placeholder="Ej: Av. Principal, Urb. Las Mercedes, Caracas" autocomplete="off" />
           <div class="map-placeholder" id="mapPlaceholder"><span>📍</span><span>Escribe la dirección para ver el mapa</span></div>
           <div class="map-preview" id="mapPreview"><iframe id="mapIframe" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe></div>
         </div>
@@ -1417,19 +1417,19 @@
   <div class="overlay" id="overlayInm">
     <div class="panel">
       <h2 id="inmPanelTitle">Agregar al catálogo</h2>
-      <form id="inmForm">
-        <div class="field"><label class="req">Código del inmueble</label><input type="text" id="inm_codigo" placeholder="INM-0001" /></div>
+      <form id="inmForm" autocomplete="off">
+        <div class="field"><label class="req">Código del inmueble</label><input type="text" id="inm_codigo" placeholder="INM-0001" autocomplete="off" /></div>
         <div class="field"><label class="req">Tipo</label>
           <select id="inm_tipo"><option>Apartamento</option><option>Casa</option><option>Terreno</option><option>Finca</option><option>Townhouse</option><option>Penthouse</option><option>Oficina</option></select>
         </div>
         <div class="field"><label>Operación</label>
           <select id="inm_operacion"><option>Venta</option><option>Alquiler</option></select>
         </div>
-        <div class="field"><label class="req">Captador</label><input type="text" id="inm_captador" placeholder="Nombre del captador responsable" /></div>
-        <div class="field"><label>Propietario / contacto</label><input type="text" id="inm_propietario" placeholder="Nombre y teléfono" /></div>
+        <div class="field"><label class="req">Captador</label><input type="text" id="inm_captador" placeholder="Nombre del captador responsable" autocomplete="off" /></div>
+        <div class="field"><label>Propietario / contacto</label><input type="text" id="inm_propietario" placeholder="Nombre y teléfono" autocomplete="off" /></div>
         <div class="field">
           <label>Dirección</label>
-          <input type="text" id="inm_direccion" placeholder="Ej: Av. Principal, Caracas" />
+          <input type="text" id="inm_direccion" placeholder="Ej: Av. Principal, Caracas" autocomplete="off" />
           <div class="map-placeholder" id="inmMapPlaceholder"><span>📍</span><span>Escribe la dirección para ver el mapa</span></div>
           <div class="map-preview" id="inmMapPreview"><iframe id="inmMapIframe" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe></div>
         </div>
