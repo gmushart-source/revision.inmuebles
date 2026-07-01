@@ -357,7 +357,7 @@
 
         wrap.innerHTML = `<table>
           <thead><tr>
-            <th>Código</th><th>Tipo</th><th>Operación</th><th>Propietario</th><th>Dirección</th>
+            <th>Código</th><th>Tipo</th><th>Operación</th><th>Captador</th><th>Propietario</th><th>Dirección</th>
             <th>Inspecciones</th><th>Último estado</th><th>Acciones</th>
           </tr></thead>
           <tbody>${list.map(inm => renderCatRow(inm)).join("")}</tbody>
@@ -394,6 +394,7 @@
           <td data-label="Código"><span class="codigo-cell">${escapeHtml(inm.codigo)}</span></td>
           <td data-label="Tipo">${escapeHtml(inm.tipo)}</td>
           <td data-label="Operación">${escapeHtml(inm.operacion||"—")}</td>
+          <td data-label="Captador"><span class="muted">${escapeHtml(inm.captador||"—")}</span></td>
           <td data-label="Propietario"><span class="muted">${escapeHtml(inm.propietario||"—")}</span></td>
           <td data-label="Dirección"><span class="muted" style="font-size:12px">${escapeHtml(inm.direccion||"—")}</span></td>
           <td data-label="Inspecciones">${progresoBadge}</td>
@@ -426,6 +427,7 @@
         $("#inm_codigo").value     = inm.codigo;
         $("#inm_tipo").value       = inm.tipo;
         $("#inm_operacion").value  = inm.operacion || "Venta";
+        $("#inm_captador").value   = inm.captador || "";
         $("#inm_propietario").value= inm.propietario || "";
         $("#inm_direccion").value  = inm.direccion || "";
         $("#inm_notas").value      = inm.notas || "";
@@ -444,6 +446,9 @@
         const codigo = $("#inm_codigo").value.trim().toUpperCase();
         if (!codigo) { showToast("El código es obligatorio.", "danger"); return; }
 
+        const captador = $("#inm_captador").value.trim();
+        if (!captador) { showToast("El nombre del captador es obligatorio.", "danger"); return; }
+
         const dup = catalogo.find(x => x.codigo.toUpperCase() === codigo && x.id !== editingInmId);
         if (dup) { showToast("Ya existe un inmueble con ese código.", "danger"); return; }
 
@@ -453,6 +458,7 @@
           inm = catalogo.find(x => x.id === editingInmId);
           Object.assign(inm, {
             codigo, tipo: $("#inm_tipo").value, operacion: $("#inm_operacion").value,
+            captador,
             propietario: $("#inm_propietario").value.trim(),
             direccion: $("#inm_direccion").value.trim(),
             notas: $("#inm_notas").value.trim(),
@@ -461,6 +467,7 @@
         } else {
           inm = {
             id: uid(), codigo, tipo: $("#inm_tipo").value, operacion: $("#inm_operacion").value,
+            captador,
             propietario: $("#inm_propietario").value.trim(),
             direccion: $("#inm_direccion").value.trim(),
             notas: $("#inm_notas").value.trim(),
@@ -516,6 +523,7 @@
           codigo: ["codigo", "code", "ref", "referencia", "id"],
           tipo: ["tipo", "type", "tipologia", "categoria"],
           operacion: ["operacion", "operación", "modalidad", "tipo operacion"],
+          captador: ["captador", "captador responsable", "responsable", "agente captador"],
           propietario: ["propietario", "owner", "contacto", "propietario / contacto"],
           direccion: ["direccion", "dirección", "address", "ubicacion", "ubicación"],
           notas: ["notas", "notes", "observaciones", "comentarios"],
@@ -533,6 +541,7 @@
         if (idxCodigo < 0) { showToast("No se encontró columna 'codigo' en el CSV.", "danger"); return; }
         const idxTipo      = findCol("tipo");
         const idxOp        = findCol("operacion");
+        const idxCaptador  = findCol("captador");
         const idxProp      = findCol("propietario");
         const idxDir       = findCol("direccion");
         const idxNotas     = findCol("notas");
@@ -549,17 +558,18 @@
 
           const tipo     = idxTipo  >= 0 ? normalizeTipo(row[idxTipo]||"")  : "Apartamento";
           const operacion= idxOp    >= 0 ? normalizeOp(row[idxOp]||"")      : "Venta";
+          const captador = idxCaptador >= 0 ? (row[idxCaptador]||"").trim() : "";
           const prop     = idxProp  >= 0 ? (row[idxProp]||"").trim()         : "";
           const dir      = idxDir   >= 0 ? (row[idxDir]||"").trim()          : "";
           const notas    = idxNotas >= 0 ? (row[idxNotas]||"").trim()        : "";
 
           const existing = catalogo.find(x => x.codigo === codigo);
           if (existing) {
-            Object.assign(existing, { tipo, operacion, propietario: prop, direccion: dir, notas, fechaActualizacion: now });
+            Object.assign(existing, { tipo, operacion, captador, propietario: prop, direccion: dir, notas, fechaActualizacion: now });
             batch.push(existing);
             actualizados++;
           } else {
-            const inm = { id: uid(), codigo, tipo, operacion, propietario: prop, direccion: dir, notas, fechaRegistro: now, fechaActualizacion: now };
+            const inm = { id: uid(), codigo, tipo, operacion, captador, propietario: prop, direccion: dir, notas, fechaRegistro: now, fechaActualizacion: now };
             catalogo.push(inm);
             batch.push(inm);
             nuevos++;
@@ -1294,7 +1304,7 @@
       <details style="margin-bottom:16px;background:var(--info-bg);border:1px solid var(--info);border-radius:8px;padding:10px 14px;">
         <summary style="cursor:pointer;font-size:12.5px;font-weight:600;color:var(--info)">¿Cómo importar desde CSV?</summary>
         <div style="font-size:12px;color:var(--ink-soft);margin-top:8px;line-height:1.6;">
-          Tu CSV debe tener una fila de encabezados. Columnas reconocidas: <code>codigo</code>, <code>tipo</code>, <code>operacion</code>, <code>propietario</code>, <code>direccion</code>, <code>notas</code>.
+          Tu CSV debe tener una fila de encabezados. Columnas reconocidas: <code>codigo</code>, <code>tipo</code>, <code>operacion</code>, <code>captador</code>, <code>propietario</code>, <code>direccion</code>, <code>notas</code>.
           El separador puede ser coma (,) o punto y coma (;). Si un código ya existe, se actualizará. Los registros sin código se omiten.<br>
           <strong>Ejemplo de fila:</strong> <code>INM-001,Apartamento,Venta,Juan Pérez,Av. Principal Caracas,Piso 3</code>
         </div>
@@ -1415,6 +1425,7 @@
         <div class="field"><label>Operación</label>
           <select id="inm_operacion"><option>Venta</option><option>Alquiler</option></select>
         </div>
+        <div class="field"><label class="req">Captador</label><input type="text" id="inm_captador" placeholder="Nombre del captador responsable" /></div>
         <div class="field"><label>Propietario / contacto</label><input type="text" id="inm_propietario" placeholder="Nombre y teléfono" /></div>
         <div class="field">
           <label>Dirección</label>
