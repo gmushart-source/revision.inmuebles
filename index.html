@@ -190,9 +190,14 @@
         catch (e) { showToast("Error al eliminar.", "danger"); }
       }
 
-      async function saveInmueble(inm) {
-        try { await setDoc(doc(db, COLL_INM, inm.id), { ...inm, uid: user.uid }); }
-        catch (e) { showToast("Error al guardar inmueble.", "danger"); }
+      async function saveInmueble(inm, successMsg = null) {
+        try {
+          await setDoc(doc(db, COLL_INM, inm.id), { ...inm, uid: user.uid });
+          if (successMsg) showToast(successMsg, "success");
+        } catch (e) {
+          console.error("Firestore saveInmueble:", e);
+          showToast("Error al guardar en la nube. Revisa tu conexión.", "danger");
+        }
       }
 
       async function deleteInmueble(id) {
@@ -200,31 +205,84 @@
         catch (e) { showToast("Error al eliminar inmueble.", "danger"); }
       }
 
-      // ── poblar select de inmueble en form de revisión ──
+      // ── buscador de inmueble en panel revisión ──
       function populateInmuebleSelect() {
-        const sel = $("#f_inmueble_sel");
-        if (!sel) return;
-        const prev = sel.value;
-        sel.innerHTML = `<option value="">— Seleccionar inmueble del catálogo —</option>` +
-          catalogo
-            .sort((a,b) => a.codigo.localeCompare(b.codigo))
-            .map(inm => `<option value="${inm.id}">${escapeHtml(inm.codigo)} · ${escapeHtml(inm.tipo)} · ${escapeHtml(inm.direccion||'Sin dirección')}</option>`)
-            .join("");
-        if (prev) sel.value = prev;
+        // now a no-op kept for compatibility; dropdown handles its own data
       }
 
-      // ── cuando eligen un inmueble del select, pre-llenar campos ──
-      document.addEventListener("change", e => {
-        if (e.target && e.target.id === "f_inmueble_sel") {
-          const inm = catalogo.find(x => x.id === e.target.value);
-          if (!inm) return;
-          $("#f_codigo").value      = inm.codigo;
-          $("#f_tipo").value        = inm.tipo || "Apartamento";
-          $("#f_operacion").value   = inm.operacion || "Venta";
-          $("#f_propietario").value = inm.propietario || "";
-          $("#f_direccion").value   = inm.direccion || "";
-          if (inm.direccion) updateMap(inm.direccion);
+      function applyInmuebleSelection(inm) {
+        if (!inm) return;
+        $("#f_inmueble_sel").value          = inm.id;
+        $("#f_codigo").value               = inm.codigo;
+        $("#f_tipo").value                 = inm.tipo || "Apartamento";
+        $("#f_operacion").value            = inm.operacion || "Venta";
+        $("#f_propietario").value          = inm.propietario || "";
+        $("#f_direccion").value            = inm.direccion || "";
+        if (inm.direccion) updateMap(inm.direccion);
+        // show badge
+        $("#f_inmueble_selected_label").textContent = `${inm.codigo} · ${inm.tipo} · ${inm.direccion || "Sin dirección"}`;
+        $("#f_inmueble_selected_badge").style.display = "flex";
+        $("#f_inmueble_search").value = "";
+        closeInmDropdown();
+      }
+
+      function clearInmuebleSelection() {
+        $("#f_inmueble_sel").value               = "";
+        $("#f_inmueble_search").value            = "";
+        $("#f_inmueble_selected_badge").style.display = "none";
+        closeInmDropdown();
+      }
+
+      function openInmDropdown(q) {
+        const dropdown = $("#f_inmueble_dropdown");
+        const list = catalogo
+          .filter(inm => !q || inm.codigo.toLowerCase().includes(q) || (inm.tipo||"").toLowerCase().includes(q) || (inm.direccion||"").toLowerCase().includes(q))
+          .sort((a,b) => a.codigo.localeCompare(b.codigo))
+          .slice(0, 40);
+
+        if (list.length === 0) {
+          dropdown.innerHTML = `<div class="inm-dd-empty">Sin resultados</div>`;
+        } else {
+          dropdown.innerHTML = list.map(inm => {
+            const hl = q ? escapeHtml(inm.codigo).replace(new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")})`, "gi"), "<mark>$1</mark>") : escapeHtml(inm.codigo);
+            return `<div class="inm-dd-item" data-inm-id="${inm.id}">
+              <span class="inm-dd-code">${hl}</span>
+              <span class="inm-dd-sub">${escapeHtml(inm.tipo)} · ${escapeHtml(inm.direccion||"Sin dirección")}</span>
+            </div>`;
+          }).join("");
+          dropdown.querySelectorAll(".inm-dd-item").forEach(item => {
+            item.addEventListener("mousedown", e => {
+              e.preventDefault();
+              const inm = catalogo.find(x => x.id === item.getAttribute("data-inm-id"));
+              if (inm) applyInmuebleSelection(inm);
+            });
+          });
         }
+        dropdown.style.display = "block";
+      }
+
+      function closeInmDropdown() {
+        const dropdown = $("#f_inmueble_dropdown");
+        if (dropdown) dropdown.style.display = "none";
+      }
+
+      document.addEventListener("input", e => {
+        if (e.target && e.target.id === "f_inmueble_search") {
+          openInmDropdown(e.target.value.trim().toLowerCase());
+        }
+      });
+      document.addEventListener("focus", e => {
+        if (e.target && e.target.id === "f_inmueble_search") {
+          openInmDropdown(e.target.value.trim().toLowerCase());
+        }
+      }, true);
+      document.addEventListener("blur", e => {
+        if (e.target && e.target.id === "f_inmueble_search") {
+          setTimeout(closeInmDropdown, 150);
+        }
+      }, true);
+      document.addEventListener("click", e => {
+        if (e.target && e.target.id === "f_inmueble_clear") clearInmuebleSelection();
       });
 
       // ── estadoGeneral ──
@@ -356,6 +414,7 @@
         editingInmId = null;
         $("#inmPanelTitle").textContent = "Agregar inmueble al catálogo";
         formInm.reset();
+        updateInmMap("");
         ovInm.classList.add("open");
       }
 
@@ -370,6 +429,7 @@
         $("#inm_propietario").value= inm.propietario || "";
         $("#inm_direccion").value  = inm.direccion || "";
         $("#inm_notas").value      = inm.notas || "";
+        updateInmMap(inm.direccion || "");
         ovInm.classList.add("open");
       }
 
@@ -398,7 +458,6 @@
             notas: $("#inm_notas").value.trim(),
             fechaActualizacion: now,
           });
-          showToast("Inmueble actualizado.", "success");
         } else {
           inm = {
             id: uid(), codigo, tipo: $("#inm_tipo").value, operacion: $("#inm_operacion").value,
@@ -408,13 +467,13 @@
             fechaRegistro: now, fechaActualizacion: now,
           };
           catalogo.push(inm);
-          showToast("Inmueble agregado al catálogo.", "success");
         }
 
         closeInmPanel();
         populateInmuebleSelect();
         renderCatalogo();
-        await saveInmueble(inm);
+        const msg = editingInmId ? "Inmueble actualizado." : "Inmueble agregado al catálogo.";
+        await saveInmueble(inm, msg);
       });
 
       async function delInm(id) {
@@ -726,10 +785,26 @@
 
       setupPhotoZone();
 
+      function updateInmMap(address) {
+        const preview     = $("#inmMapPreview");
+        const placeholder = $("#inmMapPlaceholder");
+        const iframe      = $("#inmMapIframe");
+        if (!preview || !placeholder || !iframe) return;
+        const q = address.trim();
+        if (!q) { preview.style.display = "none"; placeholder.style.display = "flex"; return; }
+        iframe.src = `https://maps.google.com/maps?q=${encodeURIComponent(q)}&output=embed&z=15`;
+        preview.style.display = "block";
+        placeholder.style.display = "none";
+      }
+
       document.addEventListener("input", e => {
         if (e.target && e.target.id === "f_direccion") {
           clearTimeout(mapDebounce);
           mapDebounce = setTimeout(() => updateMap(e.target.value), 800);
+        }
+        if (e.target && e.target.id === "inm_direccion") {
+          clearTimeout(mapDebounce);
+          mapDebounce = setTimeout(() => updateInmMap(e.target.value), 800);
         }
       });
 
@@ -744,6 +819,9 @@
       function resetForm() {
         form.reset();
         $("#f_inmueble_sel").value        = "";
+        $("#f_inmueble_search").value     = "";
+        $("#f_inmueble_selected_badge").style.display = "none";
+        closeInmDropdown();
         $("#f_tipo").value                = "Apartamento";
         $("#f_operacion").value           = "Venta";
         $("#f_estadoInfra").value         = "";
@@ -777,17 +855,8 @@
         resetForm();
         // Si viene desde el catálogo, preseleccionar
         if (inmId) {
-          $("#f_inmueble_sel").value = inmId;
-          // trigger change
           const inm = catalogo.find(x => x.id === inmId);
-          if (inm) {
-            $("#f_codigo").value      = inm.codigo;
-            $("#f_tipo").value        = inm.tipo || "Apartamento";
-            $("#f_operacion").value   = inm.operacion || "Venta";
-            $("#f_propietario").value = inm.propietario || "";
-            $("#f_direccion").value   = inm.direccion || "";
-            if (inm.direccion) updateMap(inm.direccion);
-          }
+          if (inm) applyInmuebleSelection(inm);
         }
         overlay.classList.add("open");
       }
@@ -800,7 +869,7 @@
         resetForm();
         // intentar preseleccionar el inmueble en catálogo
         const inmCat = catalogo.find(x => x.codigo === r.codigo);
-        if (inmCat) $("#f_inmueble_sel").value = inmCat.id;
+        if (inmCat) applyInmuebleSelection(inmCat);
         $("#f_codigo").value      = r.codigo;
         $("#f_tipo").value        = r.tipo;
         $("#f_operacion").value   = r.operacion;
@@ -1083,6 +1152,20 @@
     .toast.danger{ background:var(--terra); }
     .loading-row{ text-align:center; padding:40px; color:var(--ink-soft); }
 
+    /* ── Searchable inmueble dropdown ── */
+    .inm-dropdown{ position:absolute; top:calc(100% + 2px); left:0; right:0; background:var(--card); border:1px solid var(--info); border-radius:8px; box-shadow:0 6px 20px rgba(0,0,0,.12); z-index:60; max-height:240px; overflow-y:auto; }
+    .inm-dd-item{ display:flex; flex-direction:column; padding:8px 12px; cursor:pointer; border-bottom:1px solid var(--line); transition:background .1s; }
+    .inm-dd-item:last-child{ border-bottom:none; }
+    .inm-dd-item:hover{ background:var(--info-bg); }
+    .inm-dd-code{ font-family:'JetBrains Mono',monospace; font-weight:600; color:var(--brand); font-size:13px; }
+    .inm-dd-code mark{ background:var(--amber-bg); color:var(--amber); border-radius:2px; padding:0 1px; }
+    .inm-dd-sub{ font-size:11.5px; color:var(--ink-soft); margin-top:2px; }
+    .inm-dd-empty{ padding:10px 12px; color:var(--ink-soft); font-size:13px; text-align:center; }
+    .inm-selected-badge{ display:flex; align-items:center; justify-content:space-between; gap:8px; background:var(--green-bg); border:1px solid var(--green); border-radius:7px; padding:7px 10px; margin-top:6px; }
+    .inm-selected-badge span{ font-family:'JetBrains Mono',monospace; font-size:12px; font-weight:600; color:var(--green); }
+    .inm-selected-badge button{ background:none; border:none; color:var(--green); font-size:14px; cursor:pointer; padding:0 2px; line-height:1; }
+    .inm-selected-badge button:hover{ color:var(--terra); }
+
     /* CSV import button */
     .btn-csv{ background:transparent; border:1px dashed var(--brand-2); color:var(--brand-2); font-size:12.5px; padding:7px 13px; border-radius:7px; cursor:pointer; font-weight:600; font-family:'Inter',sans-serif; }
     .btn-csv:hover{ background:var(--green-bg); }
@@ -1223,13 +1306,17 @@
       <h2 id="panelTitle">Registrar revisión</h2>
       <form id="propForm">
 
-        <!-- Selector inmueble catálogo -->
+        <!-- Selector inmueble catálogo con buscador -->
         <div class="inmueble-sel-wrap">
-          <div class="field" style="margin-bottom:0">
+          <div class="field" style="margin-bottom:6px;position:relative">
             <label>Seleccionar del catálogo</label>
-            <select id="f_inmueble_sel">
-              <option value="">— Elegir inmueble cargado —</option>
-            </select>
+            <input type="text" id="f_inmueble_search" placeholder="Buscar por código, tipo o dirección…" autocomplete="off" />
+            <div id="f_inmueble_dropdown" class="inm-dropdown" style="display:none"></div>
+            <input type="hidden" id="f_inmueble_sel" />
+          </div>
+          <div id="f_inmueble_selected_badge" style="display:none" class="inm-selected-badge">
+            <span id="f_inmueble_selected_label"></span>
+            <button type="button" id="f_inmueble_clear" title="Limpiar selección">✕</button>
           </div>
           <div class="hint" style="color:var(--info)">Al elegir, los campos se pre-rellenan automáticamente.</div>
         </div>
@@ -1324,7 +1411,12 @@
           <select id="inm_operacion"><option>Venta</option><option>Alquiler</option></select>
         </div>
         <div class="field"><label>Propietario / contacto</label><input type="text" id="inm_propietario" placeholder="Nombre y teléfono" /></div>
-        <div class="field"><label>Dirección</label><input type="text" id="inm_direccion" placeholder="Ej: Av. Principal, Caracas" /></div>
+        <div class="field">
+          <label>Dirección</label>
+          <input type="text" id="inm_direccion" placeholder="Ej: Av. Principal, Caracas" />
+          <div class="map-placeholder" id="inmMapPlaceholder"><span>📍</span><span>Escribe la dirección para ver el mapa</span></div>
+          <div class="map-preview" id="inmMapPreview"><iframe id="inmMapIframe" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe></div>
+        </div>
         <div class="field"><label>Notas</label><textarea id="inm_notas" placeholder="Observaciones del inmueble…"></textarea></div>
         <div class="panel-actions">
           <button type="submit" class="btn btn-primary">Guardar</button>
